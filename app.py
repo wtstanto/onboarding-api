@@ -55,21 +55,17 @@ def gas_post(payload, timeout=10):
         payload["secret"] = GAS_SECRET
         headers = {"Content-Type": "application/json"}
 
-        # First request — don't follow the redirect
+        # POST triggers doPost() in GAS; Google responds with a 302 redirect.
+        # The redirect URL is a GET-only echo endpoint that returns the response.
         res = http_requests.post(
             GAS_WEBHOOK_URL, json=payload,
             headers=headers, timeout=timeout,
             allow_redirects=False,
         )
 
-        # Follow redirect manually, keeping it as a POST with the same body
         if res.status_code in (301, 302, 303, 307, 308):
             redirect_url = res.headers.get("Location")
-            res = http_requests.post(
-                redirect_url, json=payload,
-                headers=headers, timeout=timeout,
-                allow_redirects=False,
-            )
+            res = http_requests.get(redirect_url, timeout=timeout)
 
         res.raise_for_status()
         return res.json()
