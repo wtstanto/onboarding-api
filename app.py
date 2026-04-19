@@ -262,6 +262,18 @@ def health():
     return jsonify({"status": "ok"}), 200
 
 
+@app.route("/debug", methods=["GET"])
+def debug():
+    if not check_api_key(request):
+        return jsonify({"error": "Unauthorized"}), 401
+    result = gas_post({"action": "getAll"})
+    return jsonify({
+        "gas_configured": bool(GAS_WEBHOOK_URL),
+        "gas_url_prefix": GAS_WEBHOOK_URL[:40] if GAS_WEBHOOK_URL else None,
+        "gas_result": result,
+    })
+
+
 @app.route("/fill", methods=["POST"])
 def fill():
     data = request.get_json()
