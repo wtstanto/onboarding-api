@@ -10,10 +10,12 @@ import io
 import zipfile
 from datetime import date
 from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import NameObject
 
 app = Flask(__name__)
+CORS(app)
 
 # Paths to blank PDF templates (relative to this file)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
