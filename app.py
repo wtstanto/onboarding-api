@@ -1,18 +1,18 @@
 """
 Auntie Anne's Onboarding PDF Filler API
 ----------------------------------------
-POST /fill                    → fill PDFs, upload ZIP to Drive, log row to Sheet, return ZIP
+POST /fill                    → fill PDFs, log row to Sheet via GAS webhook, return ZIP
 GET  /health                  → 200 OK (Railway health check)
-GET  /submissions             → JSON list of employees from Google Sheet  (requires X-API-Key)
-PATCH /submissions/<id>/i9    → mark I-9 complete in Google Sheet         (requires X-API-Key)
+GET  /submissions             → JSON list of employees from Google Sheet via GAS (requires X-API-Key)
+PATCH /submissions/<id>/i9    → mark I-9 complete in Sheet via GAS (requires X-API-Key)
 """
 
 import os
 import io
-import json
 import zipfile
 from datetime import date, datetime
 
+import requests as http_requests
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from pypdf import PdfReader, PdfWriter
@@ -30,108 +30,58 @@ I9_PATH    = os.path.join(BASE_DIR, "forms", "i9.pdf")
 
 # ─── Environment ─────────────────────────────────────────────────────────────
 
-GOOGLE_CREDS_JSON = os.environ.get("GOOGLE_CREDENTIALS", "")
-DRIVE_FOLDER_ID   = os.environ.get("DRIVE_FOLDER_ID", "")
-SHEET_ID          = os.environ.get("SHEET_ID", "")
-ADMIN_API_KEY     = os.environ.get("ADMIN_API_KEY", "")
-
-SCOPES = [
-    "https://www.googleapis.com/auth/drive.file",
-    "https://www.googleapis.com/auth/spreadsheets",
-]
-
-# Lazy-initialised Google clients (reused across requests)
-_drive_client  = None
-_sheets_client = None
-
-
-def get_google_clients():
-    global _drive_client, _sheets_client
-    if _drive_client and _sheets_client:
-        return _drive_client, _sheets_client
-    if not GOOGLE_CREDS_JSON:
-        return None, None
-    try:
-        from google.oauth2 import service_account
-        from googleapiclient.discovery import build
-        creds = service_account.Credentials.from_service_account_info(
-            json.loads(GOOGLE_CREDS_JSON), scopes=SCOPES
-        )
-        _drive_client  = build("drive",  "v3", credentials=creds)
-        _sheets_client = build("sheets", "v4", credentials=creds)
-        return _drive_client, _sheets_client
-    except Exception as exc:
-        print(f"[Google] client init error: {exc}")
-        return None, None
-
-
-def upload_to_drive(drive, zip_bytes, filename):
-    """Upload zip_bytes to the configured Drive folder; return the web-view link."""
-    if not drive or not DRIVE_FOLDER_ID:
-        return None
-    try:
-        from googleapiclient.http import MediaIoBaseUpload
-        file_meta = {"name": filename, "parents": [DRIVE_FOLDER_ID]}
-        media = MediaIoBaseUpload(io.BytesIO(zip_bytes), mimetype="application/zip")
-        f = drive.files().create(
-            body=file_meta, media_body=media, fields="id,webViewLink"
-        ).execute()
-        return f.get("webViewLink", "")
-    except Exception as exc:
-        print(f"[Drive] upload error: {exc}")
-        return None
-
-
-def log_to_sheet(sheets, data, drive_url):
-    """Append one row to Sheet1 and return the sheet row number (1-indexed)."""
-    if not sheets or not SHEET_ID:
-        return None
-    try:
-        ssn    = data.get("ssn", "")
-        digits = "".join(c for c in ssn if c.isdigit())
-        masked = f"***-**-{digits[-4:]}" if len(digits) >= 4 else "***"
-
-        row = [
-            datetime.utcnow().isoformat(),  # A  submittedAt
-            data.get("firstName",  ""),     # B
-            data.get("lastName",   ""),     # C
-            data.get("email",      ""),     # D
-            data.get("phone",      ""),     # E
-            masked,                         # F  ssn (masked)
-            data.get("dob",        ""),     # G
-            data.get("address1",   ""),     # H
-            data.get("city",       ""),     # I
-            data.get("state",      ""),     # J
-            data.get("zip",        ""),     # K
-            "pending",                      # L  i9Status
-            drive_url or "",                # M  driveUrl
-            "", "", "", "", "", "",         # N-S  i9 fields (filled later)
-        ]
-
-        result = sheets.spreadsheets().values().append(
-            spreadsheetId=SHEET_ID,
-            range="Sheet1!A:S",
-            valueInputOption="RAW",
-            insertDataOption="INSERT_ROWS",
-            body={"values": [row]},
-        ).execute()
-
-        # Parse the actual row number from the returned range (e.g. "Sheet1!A3:S3")
-        updated = result.get("updates", {}).get("updatedRange", "")
-        try:
-            return int(updated.split("!")[1].split(":")[0][1:])
-        except Exception:
-            return None
-    except Exception as exc:
-        print(f"[Sheets] log error: {exc}")
-        return None
+GAS_WEBHOOK_URL = os.environ.get("GAS_WEBHOOK_URL", "")   # Google Apps Script URL
+ADMIN_API_KEY   = os.environ.get("ADMIN_API_KEY", "")
+GAS_SECRET      = os.environ.get("GAS_SECRET", "")        # shared secret for GAS auth
 
 
 def check_api_key(req):
-    """Return True if the request carries a valid admin API key (or none is configured)."""
     if not ADMIN_API_KEY:
         return True
     return req.headers.get("X-API-Key", "") == ADMIN_API_KEY
+
+
+# ─── Google Apps Script helpers ──────────────────────────────────────────────
+
+def gas_post(payload, timeout=10):
+    """POST a JSON payload to the GAS webhook. Returns parsed JSON or None."""
+    if not GAS_WEBHOOK_URL:
+        return None
+    try:
+        payload["secret"] = GAS_SECRET
+        res = http_requests.post(
+            GAS_WEBHOOK_URL, json=payload,
+            timeout=timeout,
+            headers={"Content-Type": "application/json"},
+        )
+        res.raise_for_status()
+        return res.json()
+    except Exception as exc:
+        print(f"[GAS] error: {exc}")
+        return None
+
+
+def log_to_sheet(data, drive_url=""):
+    ssn    = data.get("ssn", "")
+    digits = "".join(c for c in ssn if c.isdigit())
+    masked = f"***-**-{digits[-4:]}" if len(digits) >= 4 else "***"
+
+    result = gas_post({
+        "action":      "log",
+        "submittedAt": datetime.utcnow().isoformat(),
+        "firstName":   data.get("firstName",  ""),
+        "lastName":    data.get("lastName",   ""),
+        "email":       data.get("email",      ""),
+        "phone":       data.get("phone",      ""),
+        "ssn":         masked,
+        "dob":         data.get("dob",        ""),
+        "address1":    data.get("address1",   ""),
+        "city":        data.get("city",       ""),
+        "state":       data.get("state",      ""),
+        "zip":         data.get("zip",        ""),
+        "driveUrl":    drive_url,
+    })
+    return result.get("rowId") if result else None
 
 
 # ─── PDF helpers ─────────────────────────────────────────────────────────────
@@ -322,10 +272,8 @@ def fill():
             zf.writestr(f"{name}_I9.pdf",          i9_bytes)
         zip_bytes = zip_buf.getvalue()
 
-        # Upload to Drive and log to Sheet — errors here don't fail the request
-        drive, sheets = get_google_clients()
-        drive_url = upload_to_drive(drive, zip_bytes, zip_filename)
-        log_to_sheet(sheets, data, drive_url)
+        # Log to Sheet via Apps Script (failure here doesn't fail the request)
+        log_to_sheet(data)
 
         return send_file(
             io.BytesIO(zip_bytes),
@@ -343,52 +291,12 @@ def get_submissions():
     if not check_api_key(request):
         return jsonify({"error": "Unauthorized"}), 401
 
-    _, sheets = get_google_clients()
-    if not sheets or not SHEET_ID:
+    result = gas_post({"action": "getAll"})
+    if result is None:
         return jsonify([])
-
-    try:
-        result = sheets.spreadsheets().values().get(
-            spreadsheetId=SHEET_ID,
-            range="Sheet1!A:S",
-        ).execute()
-
-        employees = []
-        for i, row in enumerate(result.get("values", [])):
-            while len(row) < 19:
-                row.append("")
-
-            i9_complete = (row[11] or "pending") == "complete"
-            employees.append({
-                "id":          i + 1,          # 1-indexed sheet row number
-                "submittedAt": row[0],
-                "firstName":   row[1],
-                "lastName":    row[2],
-                "email":       row[3],
-                "phone":       row[4],
-                "ssn":         row[5],
-                "dob":         row[6],
-                "address1":    row[7],
-                "city":        row[8],
-                "state":       row[9],
-                "zip":         row[10],
-                "i9Status":    row[11] or "pending",
-                "driveUrl":    row[12],
-                # Nest i9 detail the way the admin UI expects it
-                "i9s2": {
-                    "docTitle":      row[13],
-                    "docNumber":     row[14],
-                    "issuer":        row[15],
-                    "expDate":       row[16],
-                    "verifiedDate":  row[17],
-                    "empName":       row[18],
-                } if i9_complete else None,
-            })
-
-        return jsonify(employees)
-
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+    if "error" in result:
+        return jsonify({"error": result["error"]}), 500
+    return jsonify(result.get("employees", []))
 
 
 @app.route("/submissions/<int:row_id>/i9", methods=["PATCH"])
@@ -400,34 +308,21 @@ def complete_i9(row_id):
     if not data:
         return jsonify({"error": "No JSON data"}), 400
 
-    _, sheets = get_google_clients()
-    if not sheets or not SHEET_ID:
-        return jsonify({"error": "Google Sheets not configured"}), 500
+    result = gas_post({
+        "action":    "completeI9",
+        "rowId":     row_id,
+        "docTitle":  data.get("docTitle",  ""),
+        "docNumber": data.get("docNumber", ""),
+        "issuer":    data.get("issuer",    ""),
+        "expDate":   data.get("expDate",   ""),
+        "empName":   data.get("empName",   ""),
+    })
 
-    try:
-        # Columns L–S (i9Status, driveUrl, i9Doc, i9DocNumber, i9Issuer, i9ExpDate, i9VerifiedDate, i9VerifiedBy)
-        values = [
-            "complete",
-            data.get("driveUrl", ""),           # preserve the drive link
-            data.get("docTitle",  ""),
-            data.get("docNumber", ""),
-            data.get("issuer",    ""),
-            data.get("expDate",   ""),
-            datetime.utcnow().isoformat(),
-            data.get("empName",   ""),
-        ]
-
-        sheets.spreadsheets().values().update(
-            spreadsheetId=SHEET_ID,
-            range=f"Sheet1!L{row_id}:S{row_id}",
-            valueInputOption="RAW",
-            body={"values": [values]},
-        ).execute()
-
-        return jsonify({"status": "ok"})
-
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+    if result is None:
+        return jsonify({"error": "GAS webhook not configured"}), 500
+    if "error" in result:
+        return jsonify({"error": result["error"]}), 500
+    return jsonify({"status": "ok"})
 
 
 if __name__ == "__main__":
