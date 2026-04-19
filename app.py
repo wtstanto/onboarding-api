@@ -44,16 +44,33 @@ def check_api_key(req):
 # ─── Google Apps Script helpers ──────────────────────────────────────────────
 
 def gas_post(payload, timeout=10):
-    """POST a JSON payload to the GAS webhook. Returns parsed JSON or None."""
+    """POST a JSON payload to the GAS webhook. Returns parsed JSON or None.
+
+    Apps Script redirects POST requests (302). Python's requests switches to GET
+    on redirect, losing the body. We follow the redirect manually as a POST.
+    """
     if not GAS_WEBHOOK_URL:
         return None
     try:
         payload["secret"] = GAS_SECRET
+        headers = {"Content-Type": "application/json"}
+
+        # First request — don't follow the redirect
         res = http_requests.post(
             GAS_WEBHOOK_URL, json=payload,
-            timeout=timeout,
-            headers={"Content-Type": "application/json"},
+            headers=headers, timeout=timeout,
+            allow_redirects=False,
         )
+
+        # Follow redirect manually, keeping it as a POST with the same body
+        if res.status_code in (301, 302, 303, 307, 308):
+            redirect_url = res.headers.get("Location")
+            res = http_requests.post(
+                redirect_url, json=payload,
+                headers=headers, timeout=timeout,
+                allow_redirects=False,
+            )
+
         res.raise_for_status()
         return res.json()
     except Exception as exc:
