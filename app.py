@@ -697,24 +697,6 @@ def debug():
     })
 
 
-@app.route("/debug/row/<int:row_id>", methods=["GET"])
-def debug_row(row_id):
-    """Temporary: return raw GAS getRow response for debugging."""
-    if not check_api_key(request):
-        return jsonify({"error": "Unauthorized"}), 401
-    result = gas_post({"action": "getRow", "rowId": row_id}, timeout=30)
-    if result is None:
-        return jsonify({"error": "GAS not configured"}), 500
-    row = result.get("row", [])
-    return jsonify({
-        "rowId": row_id,
-        "rowLen": len(row),
-        "row": row,
-        "index19": row[19] if len(row) > 19 else "MISSING",
-        "index20": row[20] if len(row) > 20 else "MISSING",
-    })
-
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
