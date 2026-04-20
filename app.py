@@ -70,7 +70,9 @@ def gas_post(payload, timeout=30):
 def upload_file_to_drive(filename, file_bytes, mimetype):
     """Upload file_bytes to Drive via GAS. Returns (fileId, url) or (None, None)."""
     if not DRIVE_FOLDER_ID:
+        print(f"[Drive] skipping upload — DRIVE_FOLDER_ID not set")
         return None, None
+    print(f"[Drive] uploading {filename} ({len(file_bytes)} bytes) to folder {DRIVE_FOLDER_ID}")
     result = gas_post({
         "action":   "uploadFile",
         "folderId": DRIVE_FOLDER_ID,
@@ -78,6 +80,7 @@ def upload_file_to_drive(filename, file_bytes, mimetype):
         "mimeType": mimetype,
         "fileData": base64.b64encode(file_bytes).decode("utf-8"),
     }, timeout=60)
+    print(f"[Drive] upload result for {filename}: {result}")
     if result and "fileId" in result:
         return result["fileId"], result.get("url", "")
     return None, None
