@@ -51,12 +51,18 @@ function doPost(e) {
     // ── Return all employees ──────────────────────────────────────────────
     if (data.action === 'getAll') {
       const rows = sheet.getDataRange().getValues();
-      const employees = rows.map((row, i) => {
+      // Skip header row if present (first cell is a non-date string like "submittedAt")
+      const dataRows = rows.filter((row, i) => {
+        if (i === 0 && row[0] && isNaN(new Date(row[0]).getTime())) return false;
+        return true;
+      });
+      const employees = dataRows.map((row, i) => {
         while (row.length < 21) row.push('');
         const i9Complete = (row[11] || 'pending') === 'complete';
+        const safeDate = (v) => { try { const d = new Date(v); return isNaN(d.getTime()) ? '' : d.toISOString(); } catch(e) { return ''; } };
         return {
           id:          i + 1,
-          submittedAt: row[0] ? new Date(row[0]).toISOString() : '',
+          submittedAt: row[0] ? safeDate(row[0]) : '',
           firstName:   row[1]  || '',
           lastName:    row[2]  || '',
           email:       row[3]  || '',
@@ -76,7 +82,7 @@ function doPost(e) {
             docNumber:    row[14] || '',
             issuer:       row[15] || '',
             expDate:      row[16] || '',
-            verifiedDate: row[17] ? new Date(row[17]).toISOString() : '',
+            verifiedDate: row[17] ? safeDate(row[17]) : '',
             empName:      row[18] || '',
           } : null,
         };
