@@ -615,18 +615,14 @@ def complete_i9(row_id):
             if i9_bytes:
                 # Fill Section 2 on top of it
                 updated_i9 = fill_i9_section2(i9_bytes, data, str(start_date))
-                # Overlay employer's drawn signature on all Section 2 signature locations:
-                #   Page 0: "Signature of Employer or AR"  rect=[294.3, 79.6, 485.3, 99.2]
-                #   Page 3: "Signature of Emp Rep 0"       rect=[246.1, 450.9, 467.2, 469.5]
-                #   Page 3: "Signature of Emp Rep 1"       rect=[245.3, 265.6, 467.2, 284.2]
-                #   Page 3: "Signature of Emp Rep 2"       rect=[245.3, 79.2,  467.2, 97.9]
+                # Overlay employer's drawn signature on Section 2 only.
+                # Page 0: "Signature of Employer or AR" rect=[294.3, 79.6, 485.3, 99.2]
+                # Page 3 fields ("Signature of Emp Rep 0/1/2") are Supplement B
+                # (reverification/rehires) — leave those blank.
                 sig_b64 = data.get("sigImage", "")
                 if sig_b64:
                     updated_i9 = overlay_signature_image(updated_i9, sig_b64, [
-                        (0, 294, 79,  188, 22),
-                        (3, 246, 450, 218, 22),
-                        (3, 245, 265, 218, 22),
-                        (3, 245, 79,  218, 22),
+                        (0, 294, 79, 188, 22),
                     ])
                 # Replace the Drive file with the completed version
                 new_file_id, _ = replace_drive_file(
