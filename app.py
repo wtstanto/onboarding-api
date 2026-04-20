@@ -603,25 +603,10 @@ def complete_i9(row_id):
         return jsonify({"error": row_result["error"]}), 500
 
     row = row_result.get("row", [])
-    # Detect header-row offset: if row[0] looks like a column header (non-date
-    # string like "submittedAt"), the sheet has a header at row 1 so the actual
-    # data row is row_id+1.
-    def _looks_like_header(v):
-        if not v or not isinstance(v, str):
-            return False
-        try:
-            from datetime import datetime as _dt
-            _dt.fromisoformat(str(v).replace("Z", "+00:00"))
-            return False
-        except Exception:
-            return True
-
+    # The id returned by /submissions is already the 1-based sheet row number
+    # (GAS getAll uses `id = i + 1` which accounts for any header row), so we
+    # can use row_id directly as the actual row without any offset detection.
     actual_row_id = row_id
-    if row and _looks_like_header(row[0]):
-        actual_row_id = row_id + 1
-        row_result2 = gas_post({"action": "getRow", "rowId": actual_row_id}, timeout=60)
-        if row_result2 and "row" in row_result2:
-            row = row_result2["row"]
 
     i9_file_id = str(row[19]).strip() if len(row) > 19 else ""
     start_date = row[20] if len(row) > 20 else ""
