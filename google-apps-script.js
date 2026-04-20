@@ -57,17 +57,16 @@ function doPost(e) {
     // ── Return all employees ──────────────────────────────────────────────
     if (data.action === 'getAll') {
       const rows = sheet.getDataRange().getValues();
-      // Skip header row if present (first cell is a non-date string like "submittedAt")
-      const dataRows = rows.filter((row, i) => {
-        if (i === 0 && row[0] && isNaN(new Date(row[0]).getTime())) return false;
-        return true;
-      });
-      const employees = dataRows.map((row, i) => {
+      const safeDate = (v) => { try { const d = new Date(v); return isNaN(d.getTime()) ? '' : d.toISOString(); } catch(e) { return ''; } };
+      // Use reduce to preserve the original row index (= actual 1-based sheet row number)
+      // so that rowId used in completeI9 / updateStatus always targets the right sheet row.
+      const employees = rows.reduce((acc, row, i) => {
+        // Skip header row (first cell is a non-date string like "submittedAt")
+        if (i === 0 && row[0] && isNaN(new Date(row[0]).getTime())) return acc;
         while (row.length < 25) row.push('');
         const i9Complete = (row[11] || 'pending') === 'complete';
-        const safeDate = (v) => { try { const d = new Date(v); return isNaN(d.getTime()) ? '' : d.toISOString(); } catch(e) { return ''; } };
-        return {
-          id:             i + 1,
+        acc.push({
+          id:             i + 1,          // actual 1-based sheet row number
           submittedAt:    row[0] ? safeDate(row[0]) : '',
           firstName:      row[1]  || '',
           lastName:       row[2]  || '',
@@ -95,8 +94,9 @@ function doPost(e) {
             verifiedDate: row[17] ? safeDate(row[17]) : '',
             empName:      row[18] || '',
           } : null,
-        };
-      });
+        });
+        return acc;
+      }, []);
       return json({ employees });
     }
 
@@ -163,6 +163,59 @@ function doPost(e) {
       return json({ fileData: Utilities.base64Encode(bytes) });
     }
 
+    // ── Combined: get row data + download its I-9 file in one round trip ────
+    // Replaces separate getRow + getFile calls to cut I-9 completion time ~50%.
+    if (data.action === 'getRowAndFile') {
+      const rowId   = parseInt(data.rowId);
+      const lastCol = Math.max(sheet.getLastColumn(), 21);
+      let actualRowId = rowId;
+      let row = sheet.getRange(rowId, 1, 1, lastCol).getValues()[0];
+      // Header-row offset detection (same logic as Flask side)
+      if (row[0] && isNaN(new Date(String(row[0])).getTime())) {
+        actualRowId = rowId + 1;
+        row = sheet.getRange(actualRowId, 1, 1, lastCol).getValues()[0];
+      }
+      const i9FileId = (row[19] || '').toString().trim();
+      let fileData = null;
+      if (i9FileId) {
+        const file  = DriveApp.getFileById(i9FileId);
+        const bytes = file.getBlob().getBytes();
+        fileData = Utilities.base64Encode(bytes);
+      }
+      return json({ row: row, actualRowId: actualRowId, fileId: i9FileId, fileData: fileData });
+    }
+
+    // ── Combined: replace I-9 file + update sheet in one round trip ──────────
+    if (data.action === 'replaceAndCompleteI9') {
+      const oldFile = DriveApp.getFileById(data.fileId);
+      const name    = data.filename || oldFile.getName();
+      const parents = oldFile.getParents();
+      const parent  = parents.next();
+      oldFile.setTrashed(true);
+      const bytes   = Utilities.base64Decode(data.fileData);
+      const blob    = Utilities.newBlob(bytes, 'application/pdf', name);
+      const newFile = parent.createFile(blob);
+      newFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      const newFileId = newFile.getId();
+      // Update sheet row
+      const rowId   = parseInt(data.rowId);
+      const lastCol = Math.max(sheet.getLastColumn(), 21);
+      const existing = sheet.getRange(rowId, 1, 1, lastCol).getValues()[0];
+      sheet.getRange(rowId, 12, 1, 10).setValues([[
+        'complete',
+        existing[12] || '',
+        data.docTitle  || '',
+        data.docNumber || '',
+        data.issuer    || '',
+        data.expDate   || '',
+        new Date().toISOString(),
+        data.empName   || '',
+        newFileId,
+        existing[20] || '',
+      ]]);
+      return json({ fileId: newFileId, url: newFile.getUrl(), status: 'ok' });
+    }
+
     // ── Replace a Drive file with updated content ─────────────────────────
     if (data.action === 'replaceFile') {
       const oldFile = DriveApp.getFileById(data.fileId);
@@ -175,6 +228,27 @@ function doPost(e) {
       const newFile = parent.createFile(blob);
       newFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
       return json({ fileId: newFile.getId(), url: newFile.getUrl() });
+    }
+
+    // ── Insert header row ─────────────────────────────────────────────────
+    if (data.action === 'setupHeaders') {
+      const headers = [
+        'Submitted At', 'First Name', 'Last Name', 'Email', 'Phone', 'SSN',
+        'Date of Birth', 'Address', 'City', 'State', 'ZIP',
+        'I-9 Status', 'Drive Folder URL',
+        'I-9 Doc Title', 'I-9 Doc Number', 'I-9 Issuer', 'I-9 Exp Date',
+        'I-9 Verified Date', 'I-9 Verified By', 'I-9 File ID',
+        'Start Date', 'EC Name', 'EC Relationship', 'EC Phone', 'Overall Status',
+      ];
+      // Only insert if row 1 is not already a header
+      const first = sheet.getRange(1, 1).getValue();
+      if (!first || !isNaN(new Date(first).getTime())) {
+        sheet.insertRowBefore(1);
+      }
+      sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+      sheet.setFrozenRows(1);
+      return json({ status: 'ok' });
     }
 
     return json({ error: 'Unknown action' });

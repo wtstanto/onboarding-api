@@ -588,61 +588,49 @@ def complete_i9(row_id):
     if not data:
         return jsonify({"error": "No JSON data"}), 400
 
-    new_i9_file_id = ""
+    # ── Round trip 1: get row data + download I-9 file in one GAS call ───────
+    # Replaces separate getRow + getFile calls (~14s) with a single call (~7s).
+    combined = gas_post({"action": "getRowAndFile", "rowId": row_id}, timeout=60)
+    if combined is None:
+        return jsonify({"error": "GAS webhook not configured"}), 500
+    if "error" in combined:
+        return jsonify({"error": combined["error"]}), 500
 
-    # Get the employee's row to find their I-9 Drive file ID and start date.
-    # If the sheet has a header row, getAll returns id=1 for the first data row
-    # but that row is actually at sheet row 2. Detect this by checking if the
-    # fetched row looks like a header (col A is not a date) and shift if needed.
-    def fetch_row(rid):
-        result = gas_post({"action": "getRow", "rowId": rid})
-        return result.get("row") if result else None
+    row            = combined.get("row", [])
+    actual_row_id  = combined.get("actualRowId", row_id)
+    i9_file_id     = combined.get("fileId", "")
+    file_data_b64  = combined.get("fileData", "")
+    start_date     = row[20] if len(row) > 20 else ""
 
-    row = fetch_row(row_id)
-    actual_row_id = row_id
-    if row and row[0] and not _is_date(str(row[0])):
-        # Landed on the header row — shift down by 1
-        actual_row_id = row_id + 1
-        row = fetch_row(actual_row_id) or row
+    if not i9_file_id or not file_data_b64:
+        return jsonify({"error": "I-9 file not found for this employee"}), 404
 
-    if row:
-        i9_file_id = row[19] if len(row) > 19 else ""  # column T
-        start_date = row[20] if len(row) > 20 else ""  # column U
+    # ── Process PDF in memory ────────────────────────────────────────────────
+    i9_bytes   = base64.b64decode(file_data_b64)
+    updated_i9 = fill_i9_section2(i9_bytes, data, str(start_date))
 
-        if i9_file_id:
-            # Download the existing I-9 (has Section 1 already filled)
-            i9_bytes = download_file_from_drive(i9_file_id)
-            if i9_bytes:
-                # Fill Section 2 on top of it
-                updated_i9 = fill_i9_section2(i9_bytes, data, str(start_date))
-                # Overlay employer's drawn signature on Section 2 only.
-                # Page 0: "Signature of Employer or AR" rect=[294.3, 79.6, 485.3, 99.2]
-                # Page 3 fields ("Signature of Emp Rep 0/1/2") are Supplement B
-                # (reverification/rehires) — leave those blank.
-                sig_b64 = data.get("sigImage", "")
-                if sig_b64:
-                    updated_i9 = overlay_signature_image(updated_i9, sig_b64, [
-                        (0, 294, 79, 188, 22),
-                    ])
-                # Replace the Drive file with the completed version
-                new_file_id, _ = replace_drive_file(
-                    i9_file_id,
-                    f"I9_COMPLETED_row{actual_row_id}.pdf",
-                    updated_i9,
-                )
-                new_i9_file_id = new_file_id or ""
+    # Overlay employer's drawn signature on Section 2 (page 0 only).
+    # "Signature of Employer or AR" field rect=[294.3, 79.6, 485.3, 99.2].
+    # Page 3 Supplement B fields are left blank (reverification/rehires).
+    sig_b64 = data.get("sigImage", "")
+    if sig_b64:
+        updated_i9 = overlay_signature_image(updated_i9, sig_b64, [
+            (0, 294, 79, 188, 22),
+        ])
 
-    # Update the Sheet row (mark complete, store I-9 completion data)
+    # ── Round trip 2: replace I-9 file + mark Sheet complete in one GAS call ─
     result = gas_post({
-        "action":      "completeI9",
-        "rowId":       actual_row_id,
-        "docTitle":    data.get("docTitle",  ""),
-        "docNumber":   data.get("docNumber", ""),
-        "issuer":      data.get("issuer",    ""),
-        "expDate":     data.get("expDate",   ""),
-        "empName":     data.get("empName",   ""),
-        "newI9FileId": new_i9_file_id,
-    })
+        "action":    "replaceAndCompleteI9",
+        "fileId":    i9_file_id,
+        "filename":  f"I9_COMPLETED_row{actual_row_id}.pdf",
+        "fileData":  base64.b64encode(updated_i9).decode("utf-8"),
+        "rowId":     actual_row_id,
+        "docTitle":  data.get("docTitle",  ""),
+        "docNumber": data.get("docNumber", ""),
+        "issuer":    data.get("issuer",    ""),
+        "expDate":   data.get("expDate",   ""),
+        "empName":   data.get("empName",   ""),
+    }, timeout=60)
 
     if result is None:
         return jsonify({"error": "GAS webhook not configured"}), 500
