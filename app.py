@@ -76,6 +76,7 @@ def create_employee_folder(folder_name):
         "parentFolderId": DRIVE_FOLDER_ID,
         "folderName":    folder_name,
     }, timeout=30)
+    print(f"[Drive] createFolder '{folder_name}' result: {result}")
     if result and "folderId" in result:
         return result["folderId"], result.get("url", "")
     return None, None
