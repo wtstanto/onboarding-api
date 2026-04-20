@@ -17,7 +17,7 @@ import requests as http_requests
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import NameObject
+from pypdf.generic import NameObject, BooleanObject
 
 app = Flask(__name__)
 CORS(app)
@@ -201,6 +201,17 @@ def fill_pdf_to_bytes(input_path_or_stream, text_fields, checkbox_fields=None):
     writer = PdfWriter()
     writer.append(reader)
 
+    # ── Strip XFA so our AcroForm changes are what every viewer renders ──────
+    # W4 is a hybrid XFA+AcroForm PDF; leaving the XFA in causes Adobe/etc. to
+    # ignore the AcroForm /V + /AS values we set below.
+    acroform_ref = writer._root_object.get("/AcroForm")
+    if acroform_ref:
+        acroform_obj = acroform_ref.get_object()
+        if "/XFA" in acroform_obj:
+            del acroform_obj["/XFA"]
+        # Tell viewers to regenerate appearance streams from our field values
+        acroform_obj.update({NameObject("/NeedAppearances"): BooleanObject(True)})
+
     for page in writer.pages:
         writer.update_page_form_field_values(page, text_fields, auto_regenerate=False)
 
@@ -210,15 +221,49 @@ def fill_pdf_to_bytes(input_path_or_stream, text_fields, checkbox_fields=None):
                 for annot_ref in page["/Annots"]:
                     annot_obj = annot_ref.get_object()
                     t = annot_obj.get("/T")
-                    if not t:
-                        continue
-                    t_str = str(t)
-                    for field_name, value in checkbox_fields.items():
-                        if t_str == field_name or field_name.endswith("." + t_str):
-                            annot_obj.update({
-                                NameObject("/V"):  NameObject(value),
-                                NameObject("/AS"): NameObject(value),
-                            })
+
+                    if t:
+                        # ── Standard checkbox / push-button with /T ──────────
+                        t_str = str(t)
+                        for field_name, value in checkbox_fields.items():
+                            if t_str == field_name or field_name.endswith("." + t_str):
+                                annot_obj.update({
+                                    NameObject("/V"):  NameObject(value),
+                                    NameObject("/AS"): NameObject(value),
+                                })
+                    else:
+                        # ── Radio-button kid: no /T, but has /Parent ─────────
+                        # e.g. DE W4 '3status' group whose kids have T=None
+                        parent_ref = annot_obj.get("/Parent")
+                        if not parent_ref:
+                            continue
+                        parent_obj = parent_ref.get_object()
+                        parent_t = parent_obj.get("/T")
+                        if not parent_t:
+                            continue
+                        parent_t_str = str(parent_t)
+                        for field_name, desired_value in checkbox_fields.items():
+                            if parent_t_str == field_name or field_name.endswith("." + parent_t_str):
+                                # Find which on-state this particular kid represents
+                                ap = annot_obj.get("/AP")
+                                if not ap:
+                                    continue
+                                ap_obj = ap.get_object()
+                                n = ap_obj.get("/N")
+                                if not n:
+                                    continue
+                                n_obj = n.get_object()
+                                if not hasattr(n_obj, "keys"):
+                                    continue
+                                on_states = [k for k in n_obj.keys() if k != "/Off"]
+                                if not on_states:
+                                    continue
+                                kid_on_state = on_states[0]  # e.g. "/Single" or "/Married"
+                                if kid_on_state == desired_value:
+                                    annot_obj.update({NameObject("/AS"): NameObject(desired_value)})
+                                    parent_obj.update({NameObject("/V"): NameObject(desired_value)})
+                                else:
+                                    annot_obj.update({NameObject("/AS"): NameObject("/Off")})
 
     buf = io.BytesIO()
     writer.write(buf)
@@ -242,7 +287,11 @@ def fill_w4(data):
         "topmostSubform[0].Page1[0].Step1a[0].f1_04[0]": city_state_zip,
         "topmostSubform[0].Page1[0].Step3_ReadOrder[0].f1_06[0]": child_credit_amount(data.get("childDependents", 0)),
         "topmostSubform[0].Page1[0].Step3_ReadOrder[0].f1_07[0]": other_dependent_amount(data.get("otherDependents", 0)),
-        "topmostSubform[0].Page1[0].f1_10[0]": data.get("additionalWithholding", ""),
+        "topmostSubform[0].Page1[0].f1_08[0]": data.get("otherIncome",           ""),
+        "topmostSubform[0].Page1[0].f1_09[0]": data.get("deductions",             ""),
+        "topmostSubform[0].Page1[0].f1_10[0]": data.get("additionalWithholding",  ""),
+        # f1_11 = employee signature date (the "Date" box in Step 5 / Sign Here area)
+        "topmostSubform[0].Page1[0].f1_11[0]": fmt_date(date.today().isoformat()),
         "topmostSubform[0].Page1[0].f1_12[0]": data.get("employerName", "Auntie Anne's"),
         "topmostSubform[0].Page1[0].f1_13[0]": fmt_date(data.get("startDate")),
         "topmostSubform[0].Page1[0].f1_14[0]": data.get("employerEIN", ""),
@@ -300,6 +349,8 @@ def fill_i9_section1(data):
         "Telephone Number":                         data.get("phone", ""),
         "Employees E-mail Address":                 data.get("email", ""),
         "Today's Date mmddyyy":                     today,
+        # Employee typed name as their Section 1 signature
+        "Signature of Employee":                    f"{data.get('firstName', '')} {data.get('lastName', '')}".strip(),
         "USCIS ANumber":                            data.get("uscisNumber", ""),
     }
     cit     = data.get("citizenship", "citizen")
