@@ -17,6 +17,8 @@ const SHEET_NAME = 'Sheet1';
 // M(13) zipDriveUrl       N(14) i9Doc            O(15) i9DocNumber
 // P(16) i9Issuer          Q(17) i9ExpDate        R(18) i9VerifiedDate
 // S(19) i9VerifiedBy      T(20) i9FileId         U(21) startDate
+// V(22) ecName            W(23) ecRelationship   X(24) ecPhone
+// Y(25) overallStatus
 
 function doPost(e) {
   try {
@@ -28,22 +30,26 @@ function doPost(e) {
     // ── Log new employee submission ───────────────────────────────────────
     if (data.action === 'log') {
       sheet.appendRow([
-        data.submittedAt || new Date().toISOString(), // A
-        data.firstName   || '',  // B
-        data.lastName    || '',  // C
-        data.email       || '',  // D
-        data.phone       || '',  // E
-        data.ssn         || '',  // F
-        data.dob         || '',  // G
-        data.address1    || '',  // H
-        data.city        || '',  // I
-        data.state       || '',  // J
-        data.zip         || '',  // K
-        'pending',               // L  i9Status
-        data.zipDriveUrl || '',  // M  zip Drive URL
-        '', '', '', '', '', '',  // N-S  i9 fields (filled on completion)
-        data.i9FileId    || '',  // T  individual I-9 PDF Drive file ID
-        data.startDate   || '',  // U  employee start date
+        data.submittedAt    || new Date().toISOString(), // A
+        data.firstName      || '',  // B
+        data.lastName       || '',  // C
+        data.email          || '',  // D
+        data.phone          || '',  // E
+        data.ssn            || '',  // F
+        data.dob            || '',  // G
+        data.address1       || '',  // H
+        data.city           || '',  // I
+        data.state          || '',  // J
+        data.zip            || '',  // K
+        'pending',                  // L  i9Status
+        data.zipDriveUrl    || '',  // M  zip Drive URL
+        '', '', '', '', '', '',     // N-S  i9 fields (filled on completion)
+        data.i9FileId       || '',  // T  individual I-9 PDF Drive file ID
+        data.startDate      || '',  // U  employee start date
+        data.ecName         || '',  // V  emergency contact name
+        data.ecRelationship || '',  // W  emergency contact relationship
+        data.ecPhone        || '',  // X  emergency contact phone
+        'new',                      // Y  overallStatus
       ]);
       return json({ status: 'ok', rowId: sheet.getLastRow() });
     }
@@ -57,26 +63,30 @@ function doPost(e) {
         return true;
       });
       const employees = dataRows.map((row, i) => {
-        while (row.length < 21) row.push('');
+        while (row.length < 25) row.push('');
         const i9Complete = (row[11] || 'pending') === 'complete';
         const safeDate = (v) => { try { const d = new Date(v); return isNaN(d.getTime()) ? '' : d.toISOString(); } catch(e) { return ''; } };
         return {
-          id:          i + 1,
-          submittedAt: row[0] ? safeDate(row[0]) : '',
-          firstName:   row[1]  || '',
-          lastName:    row[2]  || '',
-          email:       row[3]  || '',
-          phone:       row[4]  || '',
-          ssn:         row[5]  || '',
-          dob:         row[6]  ? formatDate(row[6]) : '',
-          address1:    row[7]  || '',
-          city:        row[8]  || '',
-          state:       row[9]  || '',
-          zip:         String(row[10] || ''),
-          i9Status:    row[11] || 'pending',
-          driveUrl:    row[12] || '',
-          i9FileId:    row[19] || '',
-          startDate:   row[20] ? formatDate(row[20]) : '',
+          id:             i + 1,
+          submittedAt:    row[0] ? safeDate(row[0]) : '',
+          firstName:      row[1]  || '',
+          lastName:       row[2]  || '',
+          email:          row[3]  || '',
+          phone:          row[4]  || '',
+          ssn:            row[5]  || '',
+          dob:            row[6]  ? formatDate(row[6]) : '',
+          address1:       row[7]  || '',
+          city:           row[8]  || '',
+          state:          row[9]  || '',
+          zip:            String(row[10] || ''),
+          i9Status:       row[11] || 'pending',
+          driveUrl:       row[12] || '',
+          i9FileId:       row[19] || '',
+          startDate:      row[20] ? formatDate(row[20]) : '',
+          ecName:         row[21] || '',
+          ecRelationship: row[22] || '',
+          ecPhone:        row[23] || '',
+          overallStatus:  row[24] || 'new',
           i9s2: i9Complete ? {
             docTitle:     row[13] || '',
             docNumber:    row[14] || '',
@@ -93,9 +103,17 @@ function doPost(e) {
     // ── Return a single row (for I-9 Section 2 workflow) ─────────────────
     if (data.action === 'getRow') {
       const rowId = parseInt(data.rowId);
-      const lastCol = Math.max(sheet.getLastColumn(), 21);
+      const lastCol = Math.max(sheet.getLastColumn(), 25);
       const row = sheet.getRange(rowId, 1, 1, lastCol).getValues()[0];
       return json({ row });
+    }
+
+    // ── Update overall status ─────────────────────────────────────────────
+    if (data.action === 'updateStatus') {
+      const rowId = parseInt(data.rowId);
+      if (!rowId || rowId < 1) return json({ error: 'Invalid rowId' });
+      sheet.getRange(rowId, 25).setValue(data.overallStatus || 'new');  // Y
+      return json({ status: 'ok' });
     }
 
     // ── Mark I-9 complete ─────────────────────────────────────────────────

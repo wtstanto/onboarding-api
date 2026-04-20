@@ -125,21 +125,24 @@ def log_to_sheet(data, zip_drive_url="", i9_file_id=""):
     digits = "".join(c for c in ssn if c.isdigit())
     masked = f"***-**-{digits[-4:]}" if len(digits) >= 4 else "***"
     result = gas_post({
-        "action":      "log",
-        "submittedAt": datetime.utcnow().isoformat(),
-        "firstName":   data.get("firstName",  ""),
-        "lastName":    data.get("lastName",   ""),
-        "email":       data.get("email",      ""),
-        "phone":       data.get("phone",      ""),
-        "ssn":         masked,
-        "dob":         data.get("dob",        ""),
-        "address1":    data.get("address1",   ""),
-        "city":        data.get("city",       ""),
-        "state":       data.get("state",      ""),
-        "zip":         data.get("zip",        ""),
-        "zipDriveUrl": zip_drive_url,
-        "i9FileId":    i9_file_id,
-        "startDate":   data.get("startDate",  ""),
+        "action":         "log",
+        "submittedAt":    datetime.utcnow().isoformat(),
+        "firstName":      data.get("firstName",      ""),
+        "lastName":       data.get("lastName",        ""),
+        "email":          data.get("email",           ""),
+        "phone":          data.get("phone",           ""),
+        "ssn":            masked,
+        "dob":            data.get("dob",             ""),
+        "address1":       data.get("address1",        ""),
+        "city":           data.get("city",            ""),
+        "state":          data.get("state",           ""),
+        "zip":            data.get("zip",             ""),
+        "zipDriveUrl":    zip_drive_url,
+        "i9FileId":       i9_file_id,
+        "startDate":      data.get("startDate",       ""),
+        "ecName":         data.get("ecName",          ""),
+        "ecRelationship": data.get("ecRelationship",  ""),
+        "ecPhone":        data.get("ecPhone",         ""),
     })
     return result.get("rowId") if result else None
 
@@ -467,6 +470,25 @@ def complete_i9(row_id):
         "newI9FileId": new_i9_file_id,
     })
 
+    if result is None:
+        return jsonify({"error": "GAS webhook not configured"}), 500
+    if "error" in result:
+        return jsonify({"error": result["error"]}), 500
+    return jsonify({"status": "ok"})
+
+
+@app.route("/submissions/<int:row_id>/status", methods=["PATCH"])
+def update_status(row_id):
+    if not check_api_key(request):
+        return jsonify({"error": "Unauthorized"}), 401
+    data = request.get_json()
+    if not data or "overallStatus" not in data:
+        return jsonify({"error": "Missing overallStatus"}), 400
+    result = gas_post({
+        "action":        "updateStatus",
+        "rowId":         row_id,
+        "overallStatus": data["overallStatus"],
+    })
     if result is None:
         return jsonify({"error": "GAS webhook not configured"}), 500
     if "error" in result:
