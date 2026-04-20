@@ -271,7 +271,33 @@ def fill_pdf_to_bytes(input_path_or_stream, text_fields, checkbox_fields=None):
     return buf.read()
 
 
-# ─── Signature image overlay ─────────────────────────────────────────────────
+# ─── Signature image + date text overlay ────────────────────────────────────
+
+def overlay_text(pdf_bytes, text, page_num, x, y, font_size=10):
+    """Draw a string at PDF coordinates (x, y) on page_num. Origin = bottom-left."""
+    try:
+        from reportlab.pdfgen import canvas as rl_canvas
+        orig_reader = PdfReader(io.BytesIO(pdf_bytes))
+        writer = PdfWriter()
+        writer.append(PdfReader(io.BytesIO(pdf_bytes)))
+        page = orig_reader.pages[page_num]
+        pw = float(page.mediabox.width)
+        ph = float(page.mediabox.height)
+        overlay_buf = io.BytesIO()
+        c = rl_canvas.Canvas(overlay_buf, pagesize=(pw, ph))
+        c.setFont("Helvetica", font_size)
+        c.drawString(x, y, text)
+        c.save()
+        overlay_buf.seek(0)
+        writer.pages[page_num].merge_page(PdfReader(overlay_buf).pages[0])
+        out = io.BytesIO()
+        writer.write(out)
+        out.seek(0)
+        return out.read()
+    except Exception as exc:
+        print(f"[overlay_text] error: {exc}")
+        return pdf_bytes
+
 
 def overlay_signature_image(pdf_bytes, sig_b64, placements):
     """Overlay a drawn signature PNG onto specific pages/coordinates of a PDF.
@@ -492,18 +518,19 @@ def fill():
 
         # Overlay drawn signature image if provided
         sig_b64 = data.get("signatureImage", "")
+        today_str = fmt_date(date.today().isoformat())
         if sig_b64:
-            # W4: Step 5 "Employee's signature" line.
-            # Employer field starts at y=36-66; exempt checkbox at y=129.
-            # Signature line sits in the Step 5 band around y=80-112.
-            w4_bytes    = overlay_signature_image(w4_bytes,    sig_b64, [(0, 72, 78, 275, 30)])
-            # DE W4: employee signature line.
-            # Employer name field starts at y=372; "under penalties" text ~y=450.
-            # The actual signature line is just above the employer section, ~y=415-445.
-            de_w4_bytes = overlay_signature_image(de_w4_bytes, sig_b64, [(0, 50, 420, 280, 26)])
-            # I-9: "Signature of Employee" AcroForm field rect=[42.1, 420.8, 365.3, 433.7].
-            # Center image on that field: y=408, height=28 → spans y=408-436 (center=422 ≈ field center=427).
-            i9_bytes    = overlay_signature_image(i9_bytes,    sig_b64, [(0, 42, 408, 310, 28)])
+            # W4: Step 5 signature line at y≈86; blank signing space y=88–108.
+            # Date column starts at x≈408. (Measured by rendering PDF at 150 DPI.)
+            w4_bytes = overlay_signature_image(w4_bytes, sig_b64, [(0, 100, 88, 290, 18)])
+            w4_bytes = overlay_text(w4_bytes, today_str, 0, 415, 91)
+            # DE W4: signature/date line at y≈432; blank space y=433–453.
+            # Date column starts at x≈401.
+            de_w4_bytes = overlay_signature_image(de_w4_bytes, sig_b64, [(0, 79, 432, 295, 20)])
+            de_w4_bytes = overlay_text(de_w4_bytes, today_str, 0, 401, 436)
+            # I-9: AcroForm "Signature of Employee" field rect=[42.1, 420.8, 365.3, 433.7].
+            # Today's Date is already filled via AcroForm — no text overlay needed.
+            i9_bytes = overlay_signature_image(i9_bytes, sig_b64, [(0, 42, 421, 315, 22)])
 
         zip_filename = f"{name}_onboarding_docs.zip"
         zip_buf = io.BytesIO()
