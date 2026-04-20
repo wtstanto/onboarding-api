@@ -271,6 +271,57 @@ def fill_pdf_to_bytes(input_path_or_stream, text_fields, checkbox_fields=None):
     return buf.read()
 
 
+# ─── Signature image overlay ─────────────────────────────────────────────────
+
+def overlay_signature_image(pdf_bytes, sig_b64, placements):
+    """Overlay a drawn signature PNG onto specific pages/coordinates of a PDF.
+
+    placements: list of (page_number, x, y, width, height)
+                coordinates in PDF points, origin = bottom-left of page.
+    Returns new PDF bytes, or original bytes on any error.
+    """
+    if not sig_b64:
+        return pdf_bytes
+    try:
+        from reportlab.pdfgen import canvas as rl_canvas
+        from reportlab.lib.utils import ImageReader
+        from PIL import Image
+
+        # Decode the base64 data-URL or raw base64
+        raw = sig_b64.split(",", 1)[1] if "," in sig_b64 else sig_b64
+        img_bytes = base64.b64decode(raw)
+        pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
+
+        # Build a reader from the original PDF to learn page sizes
+        orig_reader = PdfReader(io.BytesIO(pdf_bytes))
+
+        # Create one overlay page per placement
+        writer = PdfWriter()
+        writer.append(PdfReader(io.BytesIO(pdf_bytes)))
+
+        for page_num, x, y, w, h in placements:
+            page = orig_reader.pages[page_num]
+            pw = float(page.mediabox.width)
+            ph = float(page.mediabox.height)
+
+            overlay_buf = io.BytesIO()
+            c = rl_canvas.Canvas(overlay_buf, pagesize=(pw, ph))
+            c.drawImage(ImageReader(pil_img), x, y, width=w, height=h, mask="auto")
+            c.save()
+            overlay_buf.seek(0)
+
+            overlay_page = PdfReader(overlay_buf).pages[0]
+            writer.pages[page_num].merge_page(overlay_page)
+
+        out = io.BytesIO()
+        writer.write(out)
+        out.seek(0)
+        return out.read()
+    except Exception as exc:
+        print(f"[overlay_signature_image] error: {exc}")
+        return pdf_bytes
+
+
 # ─── Form fillers ─────────────────────────────────────────────────────────────
 
 def fill_w4(data):
@@ -290,8 +341,9 @@ def fill_w4(data):
         "topmostSubform[0].Page1[0].f1_08[0]": data.get("otherIncome",           ""),
         "topmostSubform[0].Page1[0].f1_09[0]": data.get("deductions",             ""),
         "topmostSubform[0].Page1[0].f1_10[0]": data.get("additionalWithholding",  ""),
-        # f1_11 = employee signature date (the "Date" box in Step 5 / Sign Here area)
-        "topmostSubform[0].Page1[0].f1_11[0]": fmt_date(date.today().isoformat()),
+        # f1_11 is NOT the signature date — it sits in the Step 4(c) visual area.
+        # The W4 "Sign Here" area has no fillable date AcroForm field; signature
+        # is overlaid as an image by overlay_signature_image() below.
         "topmostSubform[0].Page1[0].f1_12[0]": data.get("employerName", "Auntie Anne's"),
         "topmostSubform[0].Page1[0].f1_13[0]": fmt_date(data.get("startDate")),
         "topmostSubform[0].Page1[0].f1_14[0]": data.get("employerEIN", ""),
@@ -437,6 +489,16 @@ def fill():
         w4_bytes    = fill_w4(data)
         de_w4_bytes = fill_de_w4(data)
         i9_bytes    = fill_i9_section1(data)
+
+        # Overlay drawn signature image if provided
+        sig_b64 = data.get("signatureImage", "")
+        if sig_b64:
+            # W4: Step 5 "Employee's signature" line (~y=95, left of page)
+            w4_bytes    = overlay_signature_image(w4_bytes,    sig_b64, [(0, 72, 88, 270, 36)])
+            # DE W4: employee signature line (between allowances section and employer section)
+            de_w4_bytes = overlay_signature_image(de_w4_bytes, sig_b64, [(0, 50, 452, 280, 32)])
+            # I-9: "Signature of Employee" field at rect [42, 420.8, 365, 433.7]
+            i9_bytes    = overlay_signature_image(i9_bytes,    sig_b64, [(0, 42, 413, 323, 32)])
 
         zip_filename = f"{name}_onboarding_docs.zip"
         zip_buf = io.BytesIO()
