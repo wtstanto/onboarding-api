@@ -427,69 +427,76 @@ def fill_i9_section1(data):
         "Telephone Number":                         data.get("phone", ""),
         "Employees E-mail Address":                 data.get("email", ""),
         "Today's Date mmddyyy":                     today,
+        "State":                                    data.get("state", ""),
         # Signature of Employee is overlaid as a drawn image by overlay_signature_image()
         # — do NOT fill the text field here or it will show typed text under the image.
         "USCIS ANumber":                            data.get("uscisNumber", ""),
     }
     cit     = data.get("citizenship", "citizen")
     cit_map = {"citizen": "CB_1", "noncitizen": "CB_2", "lpr": "CB_3", "authorized": "CB_4"}
+    # CB_1–CB_4 on-state is /On (not /Yes — confirmed by inspecting AP/N keys)
     checkbox_fields = {
-        field_id: "/Yes" if cit == key else "/Off"
+        field_id: "/On" if cit == key else "/Off"
         for key, field_id in cit_map.items()
     }
     return fill_pdf_to_bytes(I9_PATH, text_fields, checkbox_fields)
 
 
 def fill_i9_section2(i9_bytes, section2_data, start_date=""):
-    """Fill employer Section 2 onto an existing I-9 PDF (already has Section 1)."""
-    today      = fmt_date(datetime.utcnow().date().isoformat())
-    first_day  = fmt_date(start_date) if start_date else today
-    doc_title  = section2_data.get("docTitle",  "")
-    doc_number = section2_data.get("docNumber", "")
-    issuer     = section2_data.get("issuer",    "")
-    exp_date   = section2_data.get("expDate",   "")
-    emp_name   = section2_data.get("empName",   "")
-    emp_addr   = section2_data.get("employerAddress", "")
-    emp_org    = "Auntie Anne's"
+    """Fill employer Section 2 onto an existing I-9 PDF (already has Section 1).
 
-    # Fill all numbered copies of the Section 2 document fields (copies 0, 1, 2)
+    docType="listA"  → one List A document (e.g. U.S. Passport).
+    docType="listBC" → List B + List C documents (e.g. Driver's License + SSN card).
+
+    The List A Document Title field on page 0 has no AcroForm /T name, so it is
+    written via overlay_text() after fill_pdf_to_bytes returns.
+    Supplement B (page 3) fields are intentionally left blank — reverification only.
+    """
+    today     = fmt_date(datetime.utcnow().date().isoformat())
+    first_day = fmt_date(start_date) if start_date else today
+    emp_name  = section2_data.get("empName", "")
+    emp_addr  = section2_data.get("employerAddress", "")
+    emp_org   = "Auntie Anne's"
+    doc_type  = section2_data.get("docType", "listA")
+
     text_fields = {
-        # Document info — covers List A copies (0/1/2 = employer/employee/retention copy)
-        "Document Title 0":   doc_title,
-        "Document Title 1":   doc_title,
-        "Document Title 2":   doc_title,
-        "Document Number 0":  doc_number,
-        "Document Number 1":  doc_number,
-        "Document Number 2":  doc_number,
-        "Expiration Date 0":  exp_date,
-        "Expiration Date 1":  exp_date,
-        "Expiration Date 2":  exp_date,
-        # List A issuing authority
-        "List A":             issuer,
-        # List B / C fallback (in case it's B+C instead of A)
-        "List B Document 1 Title":    doc_title,
-        "List B Issuing Authority 1": issuer,
-        "List B Document Number 1":   doc_number,
-        "List B Expiration Date 1":   exp_date,
-        # Employer info
+        # ── Employer certification ──────────────────────────────────────────
         "FirstDayEmployed mmddyyyy": first_day,
         "Last Name First Name and Title of Employer or Authorized Representative": emp_name,
-        "Name of Emp or Auth Rep 0": emp_name,
-        "Name of Emp or Auth Rep 1": emp_name,
-        "Name of Emp or Auth Rep 2": emp_name,
-        # Employer signature is overlaid as a drawn image — do not fill these text fields.
-        # "Signature of Emp Rep 0/1/2" and "Signature of Employer or AR" are left blank
-        # so the drawn image overlay is the only thing that appears.
-        # Section 2 date
-        "S2 Todays Date mmddyyyy": today,
-        "Todays Date 0":           today,
-        "Todays Date 1":           today,
-        "Todays Date 2":           today,
-        # Employer org
+        # "Signature of Employer or AR" left blank — drawn image overlaid by caller
+        "S2 Todays Date mmddyyyy":       today,
         "Employers Business or Org Name":    emp_org,
         "Employers Business or Org Address": emp_addr,
     }
-    return fill_pdf_to_bytes(io.BytesIO(i9_bytes), text_fields)
+
+    if doc_type == "listA":
+        # ── List A: single document (e.g. U.S. Passport) ───────────────────
+        # Document Title has no field name on page 0 — overlaid as text below.
+        text_fields.update({
+            "Issuing Authority 1":        section2_data.get("issuer",    ""),
+            "Document Number 0 (if any)": section2_data.get("docNumber", ""),
+            "Expiration Date if any":     fmt_date(section2_data.get("expDate", "")) or section2_data.get("expDate", ""),
+        })
+    else:
+        # ── List B + List C: two documents ─────────────────────────────────
+        text_fields.update({
+            "List B Document 1 Title":    section2_data.get("listBTitle",   ""),
+            "List B Issuing Authority 1": section2_data.get("listBIssuer",  ""),
+            "List B Document Number 1":   section2_data.get("listBNumber",  ""),
+            "List B Expiration Date 1":   fmt_date(section2_data.get("listBExpDate", "")) or section2_data.get("listBExpDate", ""),
+            "List C Document Title 1":    section2_data.get("listCTitle",   ""),
+            "List C Issuing Authority 1": section2_data.get("listCIssuer",  ""),
+            "List C Document Number 1":   section2_data.get("listCNumber",  ""),
+            "List C Expiration Date 1":   fmt_date(section2_data.get("listCExpDate", "")) or section2_data.get("listCExpDate", ""),
+        })
+
+    result = fill_pdf_to_bytes(io.BytesIO(i9_bytes), text_fields)
+
+    # List A doc title: unnamed field at page 0, x=127–263, y≈342 — use text overlay.
+    if doc_type == "listA" and section2_data.get("docTitle"):
+        result = overlay_text(result, section2_data["docTitle"], 0, 128, 345, font_size=10)
+
+    return result
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
