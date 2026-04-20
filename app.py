@@ -147,6 +147,16 @@ def log_to_sheet(data, zip_drive_url="", i9_file_id=""):
     return result.get("rowId") if result else None
 
 
+def _is_date(val):
+    """Return True if val looks like an ISO date/datetime string."""
+    try:
+        from datetime import datetime
+        datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+        return True
+    except Exception:
+        return False
+
+
 # ─── PDF helpers ─────────────────────────────────────────────────────────────
 
 def fmt_date(val):
@@ -437,10 +447,22 @@ def complete_i9(row_id):
 
     new_i9_file_id = ""
 
-    # Get the employee's row to find their I-9 Drive file ID and start date
-    row_result = gas_post({"action": "getRow", "rowId": row_id})
-    if row_result and "row" in row_result:
-        row        = row_result["row"]
+    # Get the employee's row to find their I-9 Drive file ID and start date.
+    # If the sheet has a header row, getAll returns id=1 for the first data row
+    # but that row is actually at sheet row 2. Detect this by checking if the
+    # fetched row looks like a header (col A is not a date) and shift if needed.
+    def fetch_row(rid):
+        result = gas_post({"action": "getRow", "rowId": rid})
+        return result.get("row") if result else None
+
+    row = fetch_row(row_id)
+    actual_row_id = row_id
+    if row and row[0] and not _is_date(str(row[0])):
+        # Landed on the header row — shift down by 1
+        actual_row_id = row_id + 1
+        row = fetch_row(actual_row_id) or row
+
+    if row:
         i9_file_id = row[19] if len(row) > 19 else ""  # column T
         start_date = row[20] if len(row) > 20 else ""  # column U
 
@@ -453,7 +475,7 @@ def complete_i9(row_id):
                 # Replace the Drive file with the completed version
                 new_file_id, _ = replace_drive_file(
                     i9_file_id,
-                    f"I9_COMPLETED_row{row_id}.pdf",
+                    f"I9_COMPLETED_row{actual_row_id}.pdf",
                     updated_i9,
                 )
                 new_i9_file_id = new_file_id or ""
@@ -461,7 +483,7 @@ def complete_i9(row_id):
     # Update the Sheet row (mark complete, store I-9 completion data)
     result = gas_post({
         "action":      "completeI9",
-        "rowId":       row_id,
+        "rowId":       actual_row_id,
         "docTitle":    data.get("docTitle",  ""),
         "docNumber":   data.get("docNumber", ""),
         "issuer":      data.get("issuer",    ""),
@@ -484,9 +506,16 @@ def update_status(row_id):
     data = request.get_json()
     if not data or "overallStatus" not in data:
         return jsonify({"error": "Missing overallStatus"}), 400
+    # Detect header-row offset same as complete_i9
+    row_result = gas_post({"action": "getRow", "rowId": row_id})
+    actual_row_id = row_id
+    if row_result and "row" in row_result:
+        row = row_result["row"]
+        if row and row[0] and not _is_date(str(row[0])):
+            actual_row_id = row_id + 1
     result = gas_post({
         "action":        "updateStatus",
-        "rowId":         row_id,
+        "rowId":         actual_row_id,
         "overallStatus": data["overallStatus"],
     })
     if result is None:
