@@ -595,25 +595,46 @@ def complete_i9(row_id):
     if not data:
         return jsonify({"error": "No JSON data"}), 400
 
-    # ── Round trip 1: get row data + download I-9 file in one GAS call ───────
-    # Replaces separate getRow + getFile calls (~14s) with a single call (~7s).
-    combined = gas_post({"action": "getRowAndFile", "rowId": row_id}, timeout=60)
-    if combined is None:
+    # ── Round trip 1: get row data (start date + I-9 file ID) ────────────────
+    row_result = gas_post({"action": "getRow", "rowId": row_id}, timeout=60)
+    if row_result is None:
         return jsonify({"error": "GAS webhook not configured"}), 500
-    if "error" in combined:
-        return jsonify({"error": combined["error"]}), 500
+    if "error" in row_result:
+        return jsonify({"error": row_result["error"]}), 500
 
-    row            = combined.get("row", [])
-    actual_row_id  = combined.get("actualRowId", row_id)
-    i9_file_id     = combined.get("fileId", "")
-    file_data_b64  = combined.get("fileData", "")
-    start_date     = row[20] if len(row) > 20 else ""
+    row = row_result.get("row", [])
+    # Detect header-row offset: if row[0] looks like a column header (non-date
+    # string like "submittedAt"), the sheet has a header at row 1 so the actual
+    # data row is row_id+1.
+    def _looks_like_header(v):
+        if not v or not isinstance(v, str):
+            return False
+        try:
+            from datetime import datetime as _dt
+            _dt.fromisoformat(str(v).replace("Z", "+00:00"))
+            return False
+        except Exception:
+            return True
 
-    if not i9_file_id or not file_data_b64:
+    actual_row_id = row_id
+    if row and _looks_like_header(row[0]):
+        actual_row_id = row_id + 1
+        row_result2 = gas_post({"action": "getRow", "rowId": actual_row_id}, timeout=60)
+        if row_result2 and "row" in row_result2:
+            row = row_result2["row"]
+
+    i9_file_id = str(row[19]).strip() if len(row) > 19 else ""
+    start_date = row[20] if len(row) > 20 else ""
+
+    if not i9_file_id:
         return jsonify({"error": "I-9 file not found for this employee"}), 404
 
-    # ── Process PDF in memory ────────────────────────────────────────────────
-    i9_bytes   = base64.b64decode(file_data_b64)
+    # ── Round trip 2: download current I-9 PDF from Drive ────────────────────
+    file_result = gas_post({"action": "getFile", "fileId": i9_file_id}, timeout=60)
+    if file_result is None or "error" in (file_result or {}):
+        return jsonify({"error": "Failed to download I-9 from Drive"}), 500
+
+    i9_bytes   = base64.b64decode(file_result["fileData"])
     updated_i9 = fill_i9_section2(i9_bytes, data, str(start_date))
 
     # Overlay employer's drawn signature on Section 2 (page 0 only).
@@ -625,24 +646,33 @@ def complete_i9(row_id):
             (0, 294, 79, 188, 22),
         ])
 
-    # ── Round trip 2: replace I-9 file + mark Sheet complete in one GAS call ─
-    result = gas_post({
-        "action":    "replaceAndCompleteI9",
-        "fileId":    i9_file_id,
-        "filename":  f"I9_COMPLETED_row{actual_row_id}.pdf",
-        "fileData":  base64.b64encode(updated_i9).decode("utf-8"),
-        "rowId":     actual_row_id,
-        "docTitle":  data.get("docTitle",  ""),
-        "docNumber": data.get("docNumber", ""),
-        "issuer":    data.get("issuer",    ""),
-        "expDate":   data.get("expDate",   ""),
-        "empName":   data.get("empName",   ""),
+    # ── Round trip 3: replace I-9 file in Drive ───────────────────────────────
+    replace_result = gas_post({
+        "action":   "replaceFile",
+        "fileId":   i9_file_id,
+        "filename": f"I9_COMPLETED_row{actual_row_id}.pdf",
+        "fileData": base64.b64encode(updated_i9).decode("utf-8"),
     }, timeout=60)
+    if replace_result is None or "error" in (replace_result or {}):
+        return jsonify({"error": "Failed to replace I-9 file in Drive"}), 500
 
-    if result is None:
+    new_file_id = replace_result.get("fileId", i9_file_id)
+
+    # ── Round trip 4: mark I-9 complete in Sheet ──────────────────────────────
+    complete_result = gas_post({
+        "action":      "completeI9",
+        "rowId":       actual_row_id,
+        "docTitle":    data.get("docTitle",  ""),
+        "docNumber":   data.get("docNumber", ""),
+        "issuer":      data.get("issuer",    ""),
+        "expDate":     data.get("expDate",   ""),
+        "empName":     data.get("empName",   ""),
+        "newI9FileId": new_file_id,
+    }, timeout=60)
+    if complete_result is None:
         return jsonify({"error": "GAS webhook not configured"}), 500
-    if "error" in result:
-        return jsonify({"error": result["error"]}), 500
+    if "error" in complete_result:
+        return jsonify({"error": complete_result["error"]}), 500
     return jsonify({"status": "ok"})
 
 
