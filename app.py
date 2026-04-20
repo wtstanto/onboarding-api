@@ -67,20 +67,32 @@ def gas_post(payload, timeout=30):
         return None
 
 
-def upload_file_to_drive(filename, file_bytes, mimetype):
-    """Upload file_bytes to Drive via GAS. Returns (fileId, url) or (None, None)."""
+def create_employee_folder(folder_name):
+    """Create a subfolder in the main Drive folder. Returns (folderId, url) or (None, None)."""
     if not DRIVE_FOLDER_ID:
-        print(f"[Drive] skipping upload — DRIVE_FOLDER_ID not set")
         return None, None
-    print(f"[Drive] uploading {filename} ({len(file_bytes)} bytes) to folder {DRIVE_FOLDER_ID}")
+    result = gas_post({
+        "action":        "createFolder",
+        "parentFolderId": DRIVE_FOLDER_ID,
+        "folderName":    folder_name,
+    }, timeout=30)
+    if result and "folderId" in result:
+        return result["folderId"], result.get("url", "")
+    return None, None
+
+
+def upload_file_to_drive(filename, file_bytes, mimetype, folder_id=None):
+    """Upload file_bytes to Drive via GAS. Returns (fileId, url) or (None, None)."""
+    target = folder_id or DRIVE_FOLDER_ID
+    if not target:
+        return None, None
     result = gas_post({
         "action":   "uploadFile",
-        "folderId": DRIVE_FOLDER_ID,
+        "folderId": target,
         "filename": filename,
         "mimeType": mimetype,
         "fileData": base64.b64encode(file_bytes).decode("utf-8"),
     }, timeout=60)
-    print(f"[Drive] upload result for {filename}: {result}")
     if result and "fileId" in result:
         return result["fileId"], result.get("url", "")
     return None, None
@@ -369,18 +381,23 @@ def fill():
             zf.writestr(f"{name}_I9.pdf",          i9_bytes)
         zip_bytes = zip_buf.getvalue()
 
-        # Upload I-9 PDF to Drive (needed later for Section 2 fill)
+        # Create per-employee subfolder in Drive
+        emp_folder_id, emp_folder_url = create_employee_folder(f"{first} {last}")
+        target_folder = emp_folder_id or DRIVE_FOLDER_ID
+
+        # Upload individual PDFs into the employee's folder
         i9_file_id, _ = upload_file_to_drive(
-            f"{name}_I9.pdf", i9_bytes, "application/pdf"
+            f"{name}_I9.pdf", i9_bytes, "application/pdf", target_folder
+        )
+        upload_file_to_drive(
+            f"{name}_W4_Federal.pdf", w4_bytes, "application/pdf", target_folder
+        )
+        upload_file_to_drive(
+            f"{name}_W4_Delaware.pdf", de_w4_bytes, "application/pdf", target_folder
         )
 
-        # Upload full ZIP to Drive
-        _, zip_drive_url = upload_file_to_drive(
-            zip_filename, zip_bytes, "application/zip"
-        )
-
-        # Log to Sheet
-        log_to_sheet(data, zip_drive_url=zip_drive_url or "", i9_file_id=i9_file_id or "")
+        # Log to Sheet — driveUrl points to the employee's folder
+        log_to_sheet(data, zip_drive_url=emp_folder_url or "", i9_file_id=i9_file_id or "")
 
         return send_file(
             io.BytesIO(zip_bytes),

@@ -120,6 +120,14 @@ function doPost(e) {
       return json({ status: 'ok' });
     }
 
+    // ── Create a subfolder in Drive ──────────────────────────────────────
+    if (data.action === 'createFolder') {
+      const parent = DriveApp.getFolderById(data.parentFolderId);
+      const folder = parent.createFolder(data.folderName);
+      folder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      return json({ folderId: folder.getId(), url: folder.getUrl() });
+    }
+
     // ── Upload a file to Drive ────────────────────────────────────────────
     if (data.action === 'uploadFile') {
       const folder = DriveApp.getFolderById(data.folderId);
