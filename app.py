@@ -401,8 +401,8 @@ def fill_i9_section1(data):
         "Telephone Number":                         data.get("phone", ""),
         "Employees E-mail Address":                 data.get("email", ""),
         "Today's Date mmddyyy":                     today,
-        # Employee typed name as their Section 1 signature
-        "Signature of Employee":                    f"{data.get('firstName', '')} {data.get('lastName', '')}".strip(),
+        # Signature of Employee is overlaid as a drawn image by overlay_signature_image()
+        # — do NOT fill the text field here or it will show typed text under the image.
         "USCIS ANumber":                            data.get("uscisNumber", ""),
     }
     cit     = data.get("citizenship", "citizen")
@@ -493,12 +493,17 @@ def fill():
         # Overlay drawn signature image if provided
         sig_b64 = data.get("signatureImage", "")
         if sig_b64:
-            # W4: Step 5 "Employee's signature" line (~y=95, left of page)
-            w4_bytes    = overlay_signature_image(w4_bytes,    sig_b64, [(0, 72, 88, 270, 36)])
-            # DE W4: employee signature line (between allowances section and employer section)
-            de_w4_bytes = overlay_signature_image(de_w4_bytes, sig_b64, [(0, 50, 452, 280, 32)])
-            # I-9: "Signature of Employee" field at rect [42, 420.8, 365, 433.7]
-            i9_bytes    = overlay_signature_image(i9_bytes,    sig_b64, [(0, 42, 413, 323, 32)])
+            # W4: Step 5 "Employee's signature" line.
+            # Employer field starts at y=36-66; exempt checkbox at y=129.
+            # Signature line sits in the Step 5 band around y=80-112.
+            w4_bytes    = overlay_signature_image(w4_bytes,    sig_b64, [(0, 72, 78, 275, 30)])
+            # DE W4: employee signature line.
+            # Employer name field starts at y=372; "under penalties" text ~y=450.
+            # The actual signature line is just above the employer section, ~y=415-445.
+            de_w4_bytes = overlay_signature_image(de_w4_bytes, sig_b64, [(0, 50, 420, 280, 26)])
+            # I-9: "Signature of Employee" AcroForm field rect=[42.1, 420.8, 365.3, 433.7].
+            # Center image on that field: y=408, height=28 → spans y=408-436 (center=422 ≈ field center=427).
+            i9_bytes    = overlay_signature_image(i9_bytes,    sig_b64, [(0, 42, 408, 310, 28)])
 
         zip_filename = f"{name}_onboarding_docs.zip"
         zip_buf = io.BytesIO()
