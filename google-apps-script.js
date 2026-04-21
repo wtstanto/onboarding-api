@@ -251,6 +251,28 @@ function doPost(e) {
       return json({ status: 'ok' });
     }
 
+    // ── Get shared config from PropertiesService ──────────────────────────
+    if (data.action === 'getConfig') {
+      const props = PropertiesService.getScriptProperties();
+      return json({
+        businessName: props.getProperty('businessName') || '',
+        managerName:  props.getProperty('managerName')  || '',
+        ein:          props.getProperty('ein')          || '',
+        address:      props.getProperty('address')      || '',
+        email:        props.getProperty('email')        || '',
+        state:        props.getProperty('state')        || 'DE',
+      });
+    }
+
+    // ── Save shared config to PropertiesService ───────────────────────────
+    if (data.action === 'setConfig') {
+      const props = PropertiesService.getScriptProperties();
+      ['businessName','managerName','ein','address','email','state'].forEach(k => {
+        if (data[k] !== undefined) props.setProperty(k, String(data[k]));
+      });
+      return json({ status: 'ok' });
+    }
+
     return json({ error: 'Unknown action' });
 
   } catch (err) {

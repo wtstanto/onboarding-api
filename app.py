@@ -52,6 +52,20 @@ def check_api_key(req):
     return req.headers.get("X-API-Key", "") == ADMIN_API_KEY
 
 
+# ─── Employer config cache (backed by GAS PropertiesService) ─────────────────
+import time as _time
+_cfg_cache: dict = {"data": {}, "ts": 0.0}
+
+def get_employer_config() -> dict:
+    """Return shared employer config from GAS PropertiesService (10-min TTL cache)."""
+    if _time.time() - _cfg_cache["ts"] > 600:
+        result = gas_post({"action": "getConfig"}, timeout=10)
+        if result and "businessName" in result:
+            _cfg_cache["data"] = result
+            _cfg_cache["ts"]   = _time.time()
+    return _cfg_cache["data"]
+
+
 # ─── Google Apps Script helpers ──────────────────────────────────────────────
 
 def gas_post(payload, timeout=30):
@@ -465,7 +479,7 @@ def fill_i9_section2(i9_bytes, section2_data, start_date=""):
     first_day = fmt_date(start_date) if start_date else today
     emp_name  = section2_data.get("empName", "")
     emp_addr  = section2_data.get("employerAddress", "")
-    emp_org   = "Auntie Anne's"
+    emp_org   = section2_data.get("employerOrg", "Auntie Anne's")
     doc_type  = section2_data.get("docType", "listA")
 
     text_fields = {
@@ -525,6 +539,11 @@ def fill():
         first = data.get("firstName", "employee").strip()
         last  = data.get("lastName",  "").strip()
         name  = f"{first}_{last}".replace(" ", "_")
+
+        # Inject employer info from server-side config store (falls back to defaults)
+        cfg = get_employer_config()
+        data.setdefault("employerName", cfg.get("businessName", "Auntie Anne's"))
+        data.setdefault("employerEIN",  cfg.get("ein", ""))
 
         w4_bytes    = fill_w4(data)
         de_w4_bytes = fill_de_w4(data)
@@ -629,6 +648,10 @@ def complete_i9(row_id):
         return jsonify({"error": "Failed to download I-9 from Drive"}), 500
 
     i9_bytes   = base64.b64decode(file_result["fileData"])
+    # Inject employer org name from server-side config if not provided
+    if not data.get("employerOrg"):
+        cfg = get_employer_config()
+        data["employerOrg"] = cfg.get("businessName", "Auntie Anne's")
     updated_i9 = fill_i9_section2(i9_bytes, data, str(start_date))
 
     # Overlay employer's drawn signature on Section 2 (page 0 only).
@@ -704,6 +727,34 @@ def debug():
         "admin_key_set":     bool(ADMIN_API_KEY),
         "gas_secret_set":    bool(GAS_SECRET),
     })
+
+
+@app.route("/config", methods=["GET"])
+def get_config():
+    """Return shared employer config from GAS PropertiesService."""
+    if not check_api_key(request):
+        return jsonify({"error": "Unauthorized"}), 401
+    result = gas_post({"action": "getConfig"})
+    return jsonify(result or {})
+
+
+@app.route("/config", methods=["PATCH"])
+def update_config():
+    """Save shared employer config to GAS PropertiesService and bust cache."""
+    if not check_api_key(request):
+        return jsonify({"error": "Unauthorized"}), 401
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No JSON data"}), 400
+    allowed = {"businessName", "managerName", "ein", "address", "email", "state"}
+    payload = {k: v for k, v in data.items() if k in allowed}
+    if not payload:
+        return jsonify({"error": "No valid config fields provided"}), 400
+    result = gas_post({"action": "setConfig", **payload})
+    if result is None:
+        return jsonify({"error": "GAS webhook not configured"}), 500
+    _cfg_cache["ts"] = 0.0   # bust local cache so next read is fresh
+    return jsonify({"status": "ok"})
 
 
 WELCOME_EMAIL_TEMPLATE = """\
