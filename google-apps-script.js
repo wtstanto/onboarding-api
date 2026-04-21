@@ -63,7 +63,7 @@ function doPost(e) {
       const employees = rows.reduce((acc, row, i) => {
         // Skip header row (first cell is a non-date string like "submittedAt")
         if (i === 0 && row[0] && isNaN(new Date(row[0]).getTime())) return acc;
-        while (row.length < 25) row.push('');
+        while (row.length < 27) row.push('');
         const i9Complete = (row[11] || 'pending') === 'complete';
         acc.push({
           id:             i + 1,          // actual 1-based sheet row number
@@ -85,7 +85,9 @@ function doPost(e) {
           ecName:         row[21] || '',
           ecRelationship: row[22] || '',
           ecPhone:        row[23] || '',
-          overallStatus:  row[24] || 'new',
+          overallStatus:        row[24] || 'new',
+          workingPapersStatus:  row[25] || '',
+          workingPapersFileId:  row[26] || '',
           i9s2: i9Complete ? {
             docTitle:     row[13] || '',
             docNumber:    row[14] || '',
@@ -255,22 +257,41 @@ function doPost(e) {
     if (data.action === 'getConfig') {
       const props = PropertiesService.getScriptProperties();
       return json({
-        businessName: props.getProperty('businessName') || '',
-        managerName:  props.getProperty('managerName')  || '',
-        ein:          props.getProperty('ein')          || '',
-        address:      props.getProperty('address')      || '',
-        email:        props.getProperty('email')        || '',
-        state:        props.getProperty('state')        || 'DE',
+        businessName:  props.getProperty('businessName')  || '',
+        managerName:   props.getProperty('managerName')   || '',
+        managerPhone:  props.getProperty('managerPhone')  || '',
+        ein:           props.getProperty('ein')           || '',
+        address:       props.getProperty('address')       || '',
+        email:         props.getProperty('email')         || '',
+        state:         props.getProperty('state')         || 'DE',
       });
     }
 
     // ── Save shared config to PropertiesService ───────────────────────────
     if (data.action === 'setConfig') {
       const props = PropertiesService.getScriptProperties();
-      ['businessName','managerName','ein','address','email','state'].forEach(k => {
+      ['businessName','managerName','managerPhone','ein','address','email','state'].forEach(k => {
         if (data[k] !== undefined) props.setProperty(k, String(data[k]));
       });
       return json({ status: 'ok' });
+    }
+
+    // ── Upload working papers to Drive + mark sheet complete ─────────────────
+    if (data.action === 'uploadWorkingPapers') {
+      const rowId = parseInt(data.rowId);
+      if (!rowId || rowId < 1) return json({ error: 'Invalid rowId' });
+      let fileId = '';
+      if (data.fileData && data.folderId) {
+        const folder = DriveApp.getFolderById(data.folderId);
+        const bytes  = Utilities.base64Decode(data.fileData);
+        const blob   = Utilities.newBlob(bytes, data.mimeType || 'image/jpeg', data.filename || 'working_papers');
+        const file   = folder.createFile(blob);
+        file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+        fileId = file.getId();
+      }
+      sheet.getRange(rowId, 26).setValue('complete'); // Z — workingPapersStatus
+      sheet.getRange(rowId, 27).setValue(fileId);     // AA — workingPapersFileId
+      return json({ status: 'ok', fileId });
     }
 
     // ── Send welcome email via Gmail ─────────────────────────────────────────
@@ -295,15 +316,17 @@ See you soon!
 ${data.senderName}
 Auntie Anne's Christiana Mall`;
 
+      const mailOpts = {
+        attachments: [attachment],
+        replyTo: data.replyTo || data.toEmail,
+        name: data.senderName || "Auntie Anne's",
+      };
+      if (data.cc) mailOpts.cc = data.cc;
       GmailApp.sendEmail(
         data.toEmail,
         `Welcome to the Team, ${data.firstName}! 🥨`,
         body,
-        {
-          attachments: [attachment],
-          replyTo: data.replyTo || data.toEmail,
-          name: data.senderName || "Auntie Anne's",
-        }
+        mailOpts
       );
       return json({ status: 'ok' });
     }

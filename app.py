@@ -719,6 +719,35 @@ def update_status(row_id):
     return jsonify({"status": "ok"})
 
 
+@app.route("/submissions/<int:row_id>/working-papers", methods=["POST"])
+def upload_working_papers(row_id):
+    if not check_api_key(request):
+        return jsonify({"error": "Unauthorized"}), 401
+    data = request.get_json()
+    if not data or not data.get("fileData"):
+        return jsonify({"error": "Missing fileData"}), 400
+    # Detect header-row offset
+    actual_row_id = row_id
+    row_result = gas_post({"action": "getRow", "rowId": row_id})
+    if row_result and "row" in row_result:
+        row = row_result["row"]
+        if row and row[0] and not _is_date(str(row[0])):
+            actual_row_id = row_id + 1
+    result = gas_post({
+        "action":   "uploadWorkingPapers",
+        "rowId":    actual_row_id,
+        "folderId": data.get("folderId", ""),
+        "fileData": data.get("fileData", ""),
+        "mimeType": data.get("mimeType", "image/jpeg"),
+        "filename": data.get("filename", "working_papers"),
+    })
+    if result is None:
+        return jsonify({"error": "GAS webhook not configured"}), 500
+    if "error" in result:
+        return jsonify({"error": result["error"]}), 500
+    return jsonify({"status": "ok", "fileId": result.get("fileId", "")})
+
+
 @app.route("/debug", methods=["GET"])
 def debug():
     return jsonify({
@@ -746,7 +775,7 @@ def update_config():
     data = request.get_json()
     if not data:
         return jsonify({"error": "No JSON data"}), 400
-    allowed = {"businessName", "managerName", "ein", "address", "email", "state"}
+    allowed = {"businessName", "managerName", "managerPhone", "ein", "address", "email", "state"}
     payload = {k: v for k, v in data.items() if k in allowed}
     if not payload:
         return jsonify({"error": "No valid config fields provided"}), 400
@@ -811,15 +840,16 @@ def send_welcome():
         return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
 
     result = gas_post({
-        "action":      "sendWelcomeEmail",
-        "firstName":   data["firstName"],
-        "toEmail":     data["email"],
-        "payRate":     data["payRate"],
+        "action":        "sendWelcomeEmail",
+        "firstName":     data["firstName"],
+        "toEmail":       data["email"],
+        "cc":            data.get("cc", ""),
+        "payRate":       data["payRate"],
         "firstPaycheck": data["firstPaycheck"],
-        "startWeek":   data.get("startWeek", ""),
-        "senderName":  data["senderName"],
-        "senderPhone": data.get("senderPhone", ""),
-        "replyTo":     data["senderEmail"],
+        "startWeek":     data.get("startWeek", ""),
+        "senderName":    data["senderName"],
+        "senderPhone":   data.get("senderPhone", ""),
+        "replyTo":       data["senderEmail"],
     }, timeout=30)
 
     if result is None:
