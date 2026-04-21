@@ -810,58 +810,23 @@ def send_welcome():
     if missing:
         return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
 
-    if not GMAIL_USER or not GMAIL_APP_PASS:
-        return jsonify({"error": "Email not configured — set GMAIL_USER and GMAIL_APP_PASSWORD in Railway"}), 500
+    result = gas_post({
+        "action":      "sendWelcomeEmail",
+        "firstName":   data["firstName"],
+        "toEmail":     data["email"],
+        "payRate":     data["payRate"],
+        "firstPaycheck": data["firstPaycheck"],
+        "startWeek":   data.get("startWeek", ""),
+        "senderName":  data["senderName"],
+        "senderPhone": data.get("senderPhone", ""),
+        "replyTo":     data["senderEmail"],
+    }, timeout=30)
 
-    first_name    = data["firstName"]
-    last_name     = data.get("lastName", "")
-    to_email      = data["email"]
-    pay_rate      = data["payRate"]
-    first_paycheck = data["firstPaycheck"]
-    start_week    = data.get("startWeek", "")
-    sender_name   = data["senderName"]
-    sender_phone  = data.get("senderPhone", "")
-    sender_email  = data["senderEmail"]
-
-    body = WELCOME_EMAIL_TEMPLATE.format(
-        firstName=first_name,
-        payRate=pay_rate,
-        startWeek=start_week,
-        firstPaycheck=first_paycheck,
-        senderName=sender_name,
-        senderPhone=sender_phone,
-    )
-
-    subject = f"Welcome to the Auntie Anne's Christiana Mall Team, {first_name}!"
-
-    msg = MIMEMultipart()
-    msg["From"]     = f"{sender_name} <{GMAIL_USER}>"
-    msg["To"]       = to_email
-    msg["Reply-To"] = f"{sender_name} <{sender_email}>"
-    msg["Subject"]  = subject
-    msg.attach(MIMEText(body, "plain"))
-
-    # Attach handbook PDF if it exists
-    if os.path.exists(HANDBOOK_PATH):
-        with open(HANDBOOK_PATH, "rb") as f:
-            part = MIMEBase("application", "octet-stream")
-            part.set_payload(f.read())
-        encoders.encode_base64(part)
-        part.add_header("Content-Disposition", "attachment", filename="Auntie_Annes_Employee_Handbook.pdf")
-        msg.attach(part)
-
-    try:
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(GMAIL_USER, GMAIL_APP_PASS)
-            server.sendmail(GMAIL_USER, to_email, msg.as_string())
-        return jsonify({"status": "ok"})
-    except smtplib.SMTPAuthenticationError:
-        return jsonify({"error": "Gmail authentication failed — check GMAIL_USER and GMAIL_APP_PASSWORD"}), 500
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+    if result is None:
+        return jsonify({"error": "GAS webhook not configured"}), 500
+    if "error" in result:
+        return jsonify({"error": result["error"]}), 500
+    return jsonify({"status": "ok"})
 
 
 if __name__ == "__main__":

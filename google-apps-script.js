@@ -273,6 +273,41 @@ function doPost(e) {
       return json({ status: 'ok' });
     }
 
+    // ── Send welcome email via Gmail ─────────────────────────────────────────
+    if (data.action === 'sendWelcomeEmail') {
+      const handbookFile = DriveApp.getFileById('1MkAHFaMDj3Ejkjid73nvNSpfxcq3eo2s');
+      const attachment   = handbookFile.getBlob().setName('Auntie_Annes_Employee_Handbook.pdf');
+      const body = `Hi ${data.firstName},
+
+We are all really excited to welcome you to our team at Auntie Anne's Christiana Mall! We believe that you will be a wonderful addition to our team! Your starting pay rate will be ${data.payRate}. We are paid bi-weekly on Fridays via Direct Deposit. With your start date being the week of ${data.startWeek} you will receive your first paycheck on ${data.firstPaycheck} and then every other Friday after that.
+
+Joining our team at Auntie Anne's is a 5-step process, so let's get started!
+
+Step 1: Fill out your onboarding forms at the link you received.
+Step 2: Bring your ID documents on your first day for I-9 verification.
+Step 3: Set up direct deposit with your bank info.
+Step 4: Review the employee handbook attached to this email.
+Step 5: Show up ready to make some pretzels! 🥨
+
+If you have any questions before your first day, reply to this email or call/text ${data.senderName} at ${data.senderPhone}.
+
+See you soon!
+${data.senderName}
+Auntie Anne's Christiana Mall`;
+
+      GmailApp.sendEmail(
+        data.toEmail,
+        `Welcome to the Team, ${data.firstName}! 🥨`,
+        body,
+        {
+          attachments: [attachment],
+          replyTo: data.replyTo || data.toEmail,
+          name: data.senderName || "Auntie Anne's",
+        }
+      );
+      return json({ status: 'ok' });
+    }
+
     return json({ error: 'Unknown action' });
 
   } catch (err) {
