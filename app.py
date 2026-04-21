@@ -5,12 +5,18 @@ POST /fill                    → fill PDFs, upload to Drive, log to Sheet, retu
 GET  /health                  → 200 OK
 GET  /submissions             → employee list from Sheet  (X-API-Key required)
 PATCH /submissions/<id>/i9    → fill I-9 Section 2, replace Drive file, mark Sheet complete
+POST /welcome                 → send welcome email with handbook to new hire (X-API-Key required)
 """
 
 import os
 import io
 import base64
 import zipfile
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 from datetime import date, datetime
 
 import requests as http_requests
@@ -31,8 +37,11 @@ I9_PATH    = os.path.join(BASE_DIR, "forms", "i9.pdf")
 
 # ─── Environment ─────────────────────────────────────────────────────────────
 
-GAS_WEBHOOK_URL = os.environ.get("GAS_WEBHOOK_URL", "")
-ADMIN_API_KEY   = os.environ.get("ADMIN_API_KEY", "")
+GAS_WEBHOOK_URL  = os.environ.get("GAS_WEBHOOK_URL", "")
+ADMIN_API_KEY    = os.environ.get("ADMIN_API_KEY", "")
+GMAIL_USER       = os.environ.get("GMAIL_USER", "")
+GMAIL_APP_PASS   = os.environ.get("GMAIL_APP_PASSWORD", "")
+HANDBOOK_PATH    = os.path.join(BASE_DIR, "handbook.pdf")
 GAS_SECRET      = os.environ.get("GAS_SECRET", "")
 DRIVE_FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID", "")
 
@@ -695,6 +704,110 @@ def debug():
         "admin_key_set":     bool(ADMIN_API_KEY),
         "gas_secret_set":    bool(GAS_SECRET),
     })
+
+
+WELCOME_EMAIL_TEMPLATE = """\
+Hi {firstName},
+
+We are all really excited to welcome you to our team at Auntie Anne's Christiana Mall! We believe that you will be a wonderful addition to our team! Your starting pay rate will be {payRate}. We are paid bi-weekly on Fridays via Direct Deposit. With your start date being the week of {startWeek} you will receive your first paycheck on {firstPaycheck} and then every other Friday after that.
+
+Joining our team at Auntie Anne's is a 5-step process, so let's get started!
+
+STEP 1 - REVIEW THE EMPLOYEE HANDBOOK
+Attached to this email is the employee handbook. When you have a few minutes, take some time to read through it. You are expected to read the entire document, but please pay special attention to Section 6, "Employee Conduct," and Section 7, "Timekeeping and Payroll," so you are familiar with these policies. If you have any questions about what you read in the handbook, please reach out to me ({senderName} - {senderPhone}).
+
+STEP 2 - FILL OUT YOUR NEW EMPLOYEE PAPERWORK ONLINE
+If you haven't already, you should soon be receiving a link to fill out all of the new hire paperwork online. This will be done on your mobile device or any other computer. You will be asked if you have read the employee handbook, so make sure you complete Step 1 before completing Step 2. If you have any questions while filling out new employee paperwork, please reach out to myself ({senderName}).
+
+STEP 3 - SET UP YOUR ACCOUNT ON ADP IN THE FIRST WEEK
+In the next week or so you will receive an email from ADP, our payroll processor. Please follow the instructions in the email to setup your ADP account so that you can confirm your payroll settings and view paystubs. You won't get this email until we set you up in ADP, so please give us 7-10 days to get you registered. In the meantime, you can move on to Step 4.
+
+STEP 4 - GET READY FOR YOUR FIRST DAY
+Here is what you'll need:
+
+  • Have all of your new hire paperwork completed before you come in.
+  • Bring in the forms of identification so we can fill out your I-9 form.
+  • If you are under the age of 18, bring in your working papers.
+  • Come prepared to work on the floor, with jeans or tan/black khaki pants or shorts and comfortable closed toe shoes. Long hair must be pulled back.
+  • We will provide you with an Auntie Anne's t-shirt and a hat or visor.
+  • Have your log in code. I will get you set up on our register system and send you a text with the code you'll need to clock in/out and log in on the registers.
+
+STEP 5 - DOWNLOAD OUR SCHEDULING APP
+Once you have completed your initial 4-day training you will get login information for Humanity, our scheduling service. You can log in here: https://auntieannes105112.humanity.com/app/dashboard/
+In the meantime, you can download the free Humanity app on any smartphone or tablet — just search for "Humanity - employee scheduling" in your app store.
+
+We are looking forward to working with you and seeing you achieve great things! Thanks for joining the Auntie Anne's Christiana Mall family!
+
+Best regards,
+{senderName}
+Store Manager, Auntie Anne's Christiana Mall
+{senderPhone}
+"""
+
+
+@app.route("/welcome", methods=["POST"])
+def send_welcome():
+    if not check_api_key(request):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No JSON data"}), 400
+
+    required = ["firstName", "email", "payRate", "firstPaycheck", "senderName", "senderEmail"]
+    missing = [f for f in required if not data.get(f)]
+    if missing:
+        return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
+
+    if not GMAIL_USER or not GMAIL_APP_PASS:
+        return jsonify({"error": "Email not configured — set GMAIL_USER and GMAIL_APP_PASSWORD in Railway"}), 500
+
+    first_name    = data["firstName"]
+    last_name     = data.get("lastName", "")
+    to_email      = data["email"]
+    pay_rate      = data["payRate"]
+    first_paycheck = data["firstPaycheck"]
+    start_week    = data.get("startWeek", "")
+    sender_name   = data["senderName"]
+    sender_phone  = data.get("senderPhone", "")
+    sender_email  = data["senderEmail"]
+
+    body = WELCOME_EMAIL_TEMPLATE.format(
+        firstName=first_name,
+        payRate=pay_rate,
+        startWeek=start_week,
+        firstPaycheck=first_paycheck,
+        senderName=sender_name,
+        senderPhone=sender_phone,
+    )
+
+    subject = f"Welcome to the Auntie Anne's Christiana Mall Team, {first_name}!"
+
+    msg = MIMEMultipart()
+    msg["From"]     = f"{sender_name} <{GMAIL_USER}>"
+    msg["To"]       = to_email
+    msg["Reply-To"] = f"{sender_name} <{sender_email}>"
+    msg["Subject"]  = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    # Attach handbook PDF if it exists
+    if os.path.exists(HANDBOOK_PATH):
+        with open(HANDBOOK_PATH, "rb") as f:
+            part = MIMEBase("application", "octet-stream")
+            part.set_payload(f.read())
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", "attachment", filename="Auntie_Annes_Employee_Handbook.pdf")
+        msg.attach(part)
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(GMAIL_USER, GMAIL_APP_PASS)
+            server.sendmail(GMAIL_USER, to_email, msg.as_string())
+        return jsonify({"status": "ok"})
+    except smtplib.SMTPAuthenticationError:
+        return jsonify({"error": "Gmail authentication failed — check GMAIL_USER and GMAIL_APP_PASSWORD"}), 500
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 if __name__ == "__main__":
