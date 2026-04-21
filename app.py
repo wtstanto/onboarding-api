@@ -851,7 +851,10 @@ def send_welcome():
         msg.attach(part)
 
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
             server.login(GMAIL_USER, GMAIL_APP_PASS)
             server.sendmail(GMAIL_USER, to_email, msg.as_string())
         return jsonify({"status": "ok"})
