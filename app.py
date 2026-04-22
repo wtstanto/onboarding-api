@@ -61,11 +61,16 @@ def check_api_key(req):
     return False
 
 
+_GAS_DEFAULT = object()  # sentinel — distinguishes "not passed" from "explicitly None"
+
 def resolve_store(req):
-    """Return (gas_url, drive_folder_id) for the request's API key."""
+    """Return (gas_url, drive_folder_id) for the request's API key.
+    Returns (None, None) for demo requests when no DEMO_GAS_URL is configured,
+    which causes gas_post() to short-circuit (PDFs still generated, no sheet/Drive writes).
+    """
     key = req.headers.get("X-API-Key", "")
     if DEMO_API_KEY and key == DEMO_API_KEY:
-        return (DEMO_GAS_URL or GAS_WEBHOOK_URL), (DEMO_DRIVE_FOLDER_ID or DRIVE_FOLDER_ID)
+        return DEMO_GAS_URL or None, DEMO_DRIVE_FOLDER_ID or None
     return GAS_WEBHOOK_URL, DRIVE_FOLDER_ID
 
 
@@ -86,9 +91,11 @@ def get_employer_config(gas_url=None) -> dict:
 
 # ─── Google Apps Script helpers ──────────────────────────────────────────────
 
-def gas_post(payload, timeout=30, gas_url=None):
-    """POST to GAS webhook, follow redirect as GET, return parsed JSON or None."""
-    url = gas_url or GAS_WEBHOOK_URL
+def gas_post(payload, timeout=30, gas_url=_GAS_DEFAULT):
+    """POST to GAS webhook, follow redirect as GET, return parsed JSON or None.
+    Pass gas_url=None explicitly to skip the call entirely (used by demo store).
+    """
+    url = GAS_WEBHOOK_URL if gas_url is _GAS_DEFAULT else gas_url
     if not url:
         return None
     try:
