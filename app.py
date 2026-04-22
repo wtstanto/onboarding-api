@@ -858,7 +858,7 @@ def send_welcome():
     # Build Resend payload
     to_list = [data["email"]]
     payload = {
-        "from":     f"Auntie Anne's Christiana Mall <onboarding@resend.dev>",
+        "from":     f"Auntie Anne's Christiana Mall <onboarding@gomiddleman.com>",
         "to":       to_list,
         "reply_to": sender_email,
         "subject":  f"Welcome to the Team, {first_name}! 🥨",
