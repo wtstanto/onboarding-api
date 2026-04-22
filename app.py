@@ -39,8 +39,7 @@ I9_PATH    = os.path.join(BASE_DIR, "forms", "i9.pdf")
 
 GAS_WEBHOOK_URL  = os.environ.get("GAS_WEBHOOK_URL", "")
 ADMIN_API_KEY    = os.environ.get("ADMIN_API_KEY", "")
-GMAIL_USER       = os.environ.get("GMAIL_USER", "")
-GMAIL_APP_PASS   = os.environ.get("GMAIL_APP_PASSWORD", "")
+RESEND_API_KEY   = os.environ.get("RESEND_API_KEY", "")
 HANDBOOK_PATH    = os.path.join(BASE_DIR, "handbook.pdf")
 GAS_SECRET      = os.environ.get("GAS_SECRET", "")
 DRIVE_FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID", "")
@@ -839,24 +838,59 @@ def send_welcome():
     if missing:
         return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
 
-    result = gas_post({
-        "action":        "sendWelcomeEmail",
-        "firstName":     data["firstName"],
-        "toEmail":       data["email"],
-        "cc":            data.get("cc", ""),
-        "payRate":       data["payRate"],
-        "firstPaycheck": data["firstPaycheck"],
-        "startWeek":     data.get("startWeek", ""),
-        "senderName":    data["senderName"],
-        "senderPhone":   data.get("senderPhone", ""),
-        "replyTo":       data["senderEmail"],
-    }, timeout=30)
+    if not RESEND_API_KEY:
+        return jsonify({"error": "RESEND_API_KEY not configured in Railway"}), 500
 
-    if result is None:
-        return jsonify({"error": "GAS webhook not configured"}), 500
-    if "error" in result:
-        return jsonify({"error": result["error"]}), 500
-    return jsonify({"status": "ok"})
+    first_name    = data["firstName"]
+    sender_name   = data["senderName"]
+    sender_phone  = data.get("senderPhone", "")
+    sender_email  = data["senderEmail"]
+
+    body = WELCOME_EMAIL_TEMPLATE.format(
+        firstName=first_name,
+        payRate=data["payRate"],
+        startWeek=data.get("startWeek", ""),
+        firstPaycheck=data["firstPaycheck"],
+        senderName=sender_name,
+        senderPhone=sender_phone,
+    )
+
+    # Build Resend payload
+    to_list = [data["email"]]
+    payload = {
+        "from":     f"Auntie Anne's Christiana Mall <onboarding@resend.dev>",
+        "to":       to_list,
+        "reply_to": sender_email,
+        "subject":  f"Welcome to the Team, {first_name}! 🥨",
+        "text":     body,
+    }
+    cc = data.get("cc", "").strip()
+    if cc:
+        payload["cc"] = [a.strip() for a in cc.split(",") if a.strip()]
+
+    # Attach handbook from Drive via GAS if available
+    handbook_attachment = None
+    handbook_file_id = "1MkAHFaMDj3Ejkjid73nvNSpfxcq3eo2s"
+    gas_result = gas_post({"action": "getFile", "fileId": handbook_file_id}, timeout=20)
+    if gas_result and gas_result.get("fileData"):
+        handbook_attachment = gas_result["fileData"]
+        payload["attachments"] = [{
+            "filename": "Auntie_Annes_Employee_Handbook.pdf",
+            "content":  handbook_attachment,
+        }]
+
+    try:
+        res = http_requests.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=20,
+        )
+        if res.status_code not in (200, 201):
+            return jsonify({"error": res.json().get("message", f"Resend error {res.status_code}")}), 500
+        return jsonify({"status": "ok"})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 if __name__ == "__main__":
