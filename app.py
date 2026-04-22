@@ -193,7 +193,7 @@ def log_to_sheet(data, zip_drive_url="", i9_file_id="", gas_url=None):
         "ecName":         data.get("ecName",          ""),
         "ecRelationship": data.get("ecRelationship",  ""),
         "ecPhone":        data.get("ecPhone",         ""),
-    }, gas_url=gas_url)
+    }, timeout=90, gas_url=gas_url)
     return result.get("rowId") if result else None
 
 
