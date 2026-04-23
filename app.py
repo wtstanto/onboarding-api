@@ -937,3 +937,398 @@ def send_welcome():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
+
+"""
+APPEND to /mnt/onboarding-api/app.py — do not replace any existing code.
+
+Adds 5 routes and 4 CSV/cheat-sheet builders for the /de112b downstream-export
+workflow. Uses existing helpers: gas_post, check_api_key, upload_file_to_drive,
+fmt_date, ADMIN_API_KEY, DRIVE_FOLDER_ID.
+"""
+
+# ─── Downstream-system exports (for /de112b admin) ───────────────────────────
+
+import csv as _csv
+import io as _io
+import html as _html
+
+# Sheet indexes for the new columns (0-based, matching the row[] arrays from
+# GAS getRow). Column letters in comments. If the sheet ever shifts these must
+# update here AND in google-apps-script.js — keep in sync.
+_COL_GENDER           = 25  # Z
+_COL_PAY_RATE         = 26  # AA
+_COL_POSITION         = 27  # AB
+_COL_LOCATION         = 28  # AC
+_COL_DEPT_CODE        = 29  # AD
+_COL_HIRE_DATE        = 30  # AE
+_COL_HUMANITY_STAMP   = 31  # AF
+_COL_QU_STAMP         = 32  # AG
+_COL_ZIGNAL_STAMP     = 33  # AH
+_COL_ADP_SHEET_STAMP  = 34  # AI
+_COL_ADP_CSV_STAMP    = 35  # AJ
+
+# Map system name → stamp column index + sheet column number (1-based, for GAS)
+_EXPORT_SYSTEMS = {
+    "humanity": {"stamp_idx": _COL_HUMANITY_STAMP,  "stamp_col": 32, "label": "Humanity"},
+    "qu":       {"stamp_idx": _COL_QU_STAMP,        "stamp_col": 33, "label": "Qu POS"},
+    "zignal":   {"stamp_idx": _COL_ZIGNAL_STAMP,    "stamp_col": 34, "label": "Zignal"},
+    "adp":      {"stamp_idx": _COL_ADP_CSV_STAMP,   "stamp_col": 36, "label": "ADP Run"},
+    "adp_sheet":{"stamp_idx": _COL_ADP_SHEET_STAMP, "stamp_col": 35, "label": "ADP cheat sheet"},
+}
+
+
+def _row_to_employee(row):
+    """Normalize a sheet row (list of cell values from GAS getRow) into a dict
+    with every field the CSV/cheat-sheet builders need. Missing cells become ''.
+
+    Two date formats are exposed:
+    - `dob`, `startDate`, `hireDate`: human MM/DD/YYYY (used in cheat sheet)
+    - `dobIso`, `hireDateIso`: ISO YYYY-MM-DD (used in CSVs for machine imports)
+    """
+    def g(idx):
+        try:
+            return row[idx] if row[idx] is not None else ""
+        except IndexError:
+            return ""
+
+    def iso_date(val):
+        """Force YYYY-MM-DD for CSV outputs. Handles ISO, GAS-format, and empty."""
+        if not val:
+            return ""
+        try:
+            return date.fromisoformat(str(val)[:10]).isoformat()
+        except Exception:
+            try:
+                # Fallback for GAS format: "Mon Apr 20 2026 00:00:00 GMT-0400"
+                from datetime import datetime as _dt
+                return _dt.strptime(str(val)[:15], "%a %b %d %Y").date().isoformat()
+            except Exception:
+                return str(val)
+
+    raw_dob        = g(6)
+    raw_start      = g(20)
+    raw_hire       = g(_COL_HIRE_DATE) or raw_start
+
+    return {
+        "submittedAt":    g(0),
+        "firstName":      g(1),
+        "lastName":       g(2),
+        "email":          g(3),
+        "phone":          g(4),
+        "ssn_masked":     g(5),   # sheet stores masked SSN; real SSN is NOT here
+        "dob":            fmt_date(raw_dob),
+        "dobIso":         iso_date(raw_dob),
+        "address1":       g(7),
+        "city":           g(8),
+        "state":          g(9),
+        "zip":            str(g(10)),
+        "i9Status":       g(11),
+        "driveUrl":       g(12),
+        "startDate":      fmt_date(raw_start),
+        "ecName":         g(21),
+        "ecRelationship": g(22),
+        "ecPhone":        g(23),
+        "overallStatus":  g(24),
+        "gender":         g(_COL_GENDER),
+        "payRate":        g(_COL_PAY_RATE),
+        "position":       g(_COL_POSITION),
+        "location":       g(_COL_LOCATION),
+        "deptCode":       g(_COL_DEPT_CODE),
+        "hireDate":       fmt_date(raw_hire),
+        "hireDateIso":    iso_date(raw_hire),
+    }
+
+
+def _employment_complete(emp):
+    """Pay rate, position, location are the three hard requirements before any
+    export is allowed. Dept code and hire date we can infer if blank."""
+    return bool(str(emp.get("payRate", "")).strip()
+                and str(emp.get("position", "")).strip()
+                and str(emp.get("location", "")).strip())
+
+
+def _get_row_and_drive_folder(row_id):
+    """Fetch the employee's sheet row AND their individual Drive folder ID.
+
+    The Drive folder ID is needed to save the exported CSV alongside their
+    PDFs. We get it by asking GAS for the I-9 file's parent folder. If there
+    is no I-9 file on record (shouldn't happen post-submission), folder_id is
+    None and the caller should skip the Drive upload.
+    """
+    result = gas_post({"action": "getRow", "rowId": row_id}, timeout=30)
+    if not result or "error" in result:
+        return None, None
+    row = result.get("row", [])
+    emp = _row_to_employee(row)
+
+    folder_id = None
+    i9_file_id = str(row[19]).strip() if len(row) > 19 else ""
+    if i9_file_id:
+        parent_result = gas_post({
+            "action": "getFileParent", "fileId": i9_file_id
+        }, timeout=15)
+        if parent_result and "folderId" in parent_result:
+            folder_id = parent_result["folderId"]
+    return emp, folder_id
+
+
+def _stamp_export(row_id, system):
+    """Write the current timestamp into the right stamp column."""
+    sys_info = _EXPORT_SYSTEMS.get(system)
+    if not sys_info:
+        return
+    gas_post({
+        "action": "stampExport",
+        "rowId": row_id,
+        "col": sys_info["stamp_col"],
+        "timestamp": datetime.utcnow().isoformat(),
+    }, timeout=15)
+
+
+def _csv_response(filename, rows):
+    """Build a CSV file as a Flask response. rows is a list of lists; first
+    row is the header."""
+    buf = _io.StringIO()
+    writer = _csv.writer(buf, quoting=_csv.QUOTE_MINIMAL)
+    for r in rows:
+        writer.writerow(r)
+    buf.seek(0)
+    return send_file(
+        _io.BytesIO(buf.getvalue().encode("utf-8")),
+        as_attachment=True,
+        download_name=filename,
+        mimetype="text/csv",
+    )
+
+
+# ─── CSV builders — one per system ───────────────────────────────────────────
+
+def build_humanity_csv(emp):
+    """Humanity's import accepts First Name, Last Name, Email, Phone, Location,
+    Position, Wage, Start Date as column headers. Custom fields (any extra
+    header) get auto-created. Format confirmed per helpcenter.humanity.com."""
+    return [
+        ["First Name", "Last Name", "Email", "Phone",
+         "Location", "Position", "Wage", "Start Date"],
+        [
+            emp["firstName"], emp["lastName"], emp["email"], emp["phone"],
+            emp["location"], emp["position"], emp["payRate"], emp["hireDateIso"],
+        ],
+    ]
+
+
+def build_qu_csv(emp):
+    """Qu POS template not yet confirmed — generic staff columns. Ask Bryan for
+    a real export sample and update this mapping."""
+    return [
+        ["First Name", "Last Name", "Email", "Phone",
+         "Role", "Location", "Start Date"],
+        [
+            emp["firstName"], emp["lastName"], emp["email"], emp["phone"],
+            emp["position"], emp["location"], emp["hireDateIso"],
+        ],
+    ]
+
+
+def build_zignal_csv(emp):
+    """Zignal template not yet confirmed — generic staff columns including a
+    blank Qu PIN column Ashley fills in manually once Qu generates it."""
+    return [
+        ["First Name", "Last Name", "Role", "Location",
+         "Qu PIN", "Start Date", "Email", "Phone"],
+        [
+            emp["firstName"], emp["lastName"], emp["position"], emp["location"],
+            "",  # Qu PIN unknown until after Qu onboarding
+            emp["hireDateIso"], emp["email"], emp["phone"],
+        ],
+    ]
+
+
+def build_adp_csv(emp):
+    """Generic ADP-compatible column set. RUN has no self-serve new-hire CSV
+    import, but we ship one anyway in case Bryan connects a Marketplace
+    integration (Deputy, HR Cloud, etc.) that accepts this shape."""
+    return [
+        ["First Name", "Middle Name", "Last Name", "SSN", "Date of Birth",
+         "Gender", "Address Line 1", "City", "State", "ZIP",
+         "Phone", "Email", "Hire Date", "Pay Rate", "Pay Frequency",
+         "Department Code", "Position", "Location"],
+        [
+            emp["firstName"], "", emp["lastName"],
+            emp["ssn_masked"],   # sheet only has masked SSN; real SSN lives in the PDFs
+            emp["dobIso"], emp["gender"],
+            emp["address1"], emp["city"], emp["state"], emp["zip"],
+            emp["phone"], emp["email"],
+            emp["hireDateIso"], emp["payRate"],
+            "Biweekly",  # hardcoded default — confirm with Bryan
+            emp["deptCode"], emp["position"], emp["location"],
+        ],
+    ]
+
+
+def build_adp_cheatsheet_html(emp):
+    """Printable one-page HTML formatted to mirror ADP Run's New Hire Wizard
+    step order. Ashley keeps this open on a second monitor while she tabs
+    through Run's wizard."""
+    esc = _html.escape
+    ssn_note = "(Full SSN on printed W-4 in Drive folder — this sheet shows masked only)"
+    rows = [
+        ("Personal", [
+            ("Legal First Name", emp["firstName"]),
+            ("Legal Last Name",  emp["lastName"]),
+            ("SSN",              f"{emp['ssn_masked']} <small style='color:#8792a2'>{ssn_note}</small>"),
+            ("Date of Birth",    emp["dob"]),
+            ("Gender",           emp["gender"] or "—"),
+        ]),
+        ("Contact", [
+            ("Address",          f"{emp['address1']}, {emp['city']} {emp['state']} {emp['zip']}"),
+            ("Phone",            emp["phone"]),
+            ("Email",            emp["email"]),
+        ]),
+        ("Employment", [
+            ("Hire Date",        emp["hireDate"]),
+            ("Pay Rate",         f"${emp['payRate']}/hr" if emp["payRate"] else "—"),
+            ("Pay Frequency",    "Biweekly (confirm)"),
+            ("Position",         emp["position"]),
+            ("Location",         emp["location"]),
+            ("Department Code",  emp["deptCode"] or "—"),
+        ]),
+        ("Emergency Contact", [
+            ("Name",             emp["ecName"]),
+            ("Relationship",     emp["ecRelationship"]),
+            ("Phone",            emp["ecPhone"]),
+        ]),
+    ]
+    sections_html = ""
+    for section_title, fields in rows:
+        field_html = "".join(
+            f"<tr><td class='lbl'>{esc(label)}</td>"
+            f"<td class='val'>{val if '<small' in str(val) else esc(str(val))}</td></tr>"
+            for label, val in fields
+        )
+        sections_html += (
+            f"<section><h2>{esc(section_title)}</h2>"
+            f"<table>{field_html}</table></section>"
+        )
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>ADP Run cheat sheet — {esc(emp['firstName'])} {esc(emp['lastName'])}</title>
+<style>
+  @media print {{ @page {{ margin: 0.5in; }} .no-print {{ display: none; }} }}
+  body {{ font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+         font-size: 13px; color: #1a1f36; max-width: 720px;
+         margin: 24px auto; padding: 0 24px; }}
+  h1 {{ font-size: 18px; margin-bottom: 4px; }}
+  .sub {{ color: #8792a2; font-size: 12px; margin-bottom: 20px; }}
+  section {{ margin-bottom: 18px; page-break-inside: avoid; }}
+  section h2 {{ font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+               color: #8792a2; margin-bottom: 6px; border-bottom: 1px solid #e3e8ee;
+               padding-bottom: 4px; }}
+  table {{ width: 100%; border-collapse: collapse; }}
+  td {{ padding: 5px 0; vertical-align: top; }}
+  td.lbl {{ color: #4f566b; width: 35%; }}
+  td.val {{ font-weight: 500; }}
+  .no-print {{ background: #f6f9fc; padding: 12px; border-radius: 6px;
+              margin-bottom: 16px; font-size: 12px; color: #4f566b; }}
+  .no-print button {{ background: #000f9f; color: white; border: 0; padding: 8px 14px;
+                     border-radius: 6px; font-size: 12px; cursor: pointer; margin-left: 8px; }}
+</style>
+</head><body>
+<div class="no-print">
+  Open ADP Run on your main screen. Work through the New Hire Wizard and copy
+  each field below into the matching wizard field.
+  <button onclick="window.print()">Print</button>
+</div>
+<h1>{esc(emp['firstName'])} {esc(emp['lastName'])}</h1>
+<div class="sub">ADP Run new-hire cheat sheet · generated {datetime.utcnow().strftime('%b %d, %Y')}</div>
+{sections_html}
+</body></html>"""
+
+
+# ─── Routes ──────────────────────────────────────────────────────────────────
+
+@app.route("/submissions/<int:row_id>/employment", methods=["PATCH"])
+def update_employment(row_id):
+    """Ashley saves pay rate / position / location / dept code / hire date
+    from the admin sidebar. Writes to columns AA–AE via GAS."""
+    if not check_api_key(request):
+        return jsonify({"error": "Unauthorized"}), 401
+    data = request.get_json() or {}
+    result = gas_post({
+        "action":   "updateEmployment",
+        "rowId":    row_id,
+        "payRate":  data.get("payRate", ""),
+        "position": data.get("position", ""),
+        "location": data.get("location", ""),
+        "deptCode": data.get("deptCode", ""),
+        "hireDate": data.get("hireDate", ""),
+    }, timeout=20)
+    if not result or "error" in result:
+        return jsonify({"error": (result or {}).get("error", "GAS error")}), 500
+    return jsonify({"status": "ok"})
+
+
+@app.route("/submissions/<int:row_id>/export/<system>", methods=["GET"])
+def export_for_system(row_id, system):
+    """Download a CSV for one of {humanity, qu, zignal, adp} OR the ADP
+    cheat-sheet as an HTML page (system='adp_sheet' and format=html).
+
+    Uses ?key=<ADMIN_API_KEY> query param for auth because this is a direct
+    file download triggered by window.open() — can't set custom headers.
+    """
+    # Query-param auth for file downloads (no custom header possible)
+    provided = request.args.get("key", "") or request.headers.get("X-API-Key", "")
+    if ADMIN_API_KEY and provided != ADMIN_API_KEY:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    if system not in _EXPORT_SYSTEMS:
+        return jsonify({"error": f"Unknown system: {system}"}), 400
+
+    emp, folder_id = _get_row_and_drive_folder(row_id)
+    if not emp:
+        return jsonify({"error": "Employee not found"}), 404
+
+    if not _employment_complete(emp):
+        return jsonify({
+            "error": "Employment details incomplete — set pay rate, position, "
+                     "and location before exporting"
+        }), 400
+
+    name_slug = f"{emp['firstName']}_{emp['lastName']}".replace(" ", "_")
+
+    # Special case: ADP cheat sheet is HTML, not CSV
+    if system == "adp_sheet":
+        html_content = build_adp_cheatsheet_html(emp)
+        # Save to Drive as HTML for audit trail
+        if folder_id:
+            upload_file_to_drive(
+                f"ADP_cheatsheet_{name_slug}.html",
+                html_content.encode("utf-8"),
+                "text/html",
+                folder_id=folder_id,
+            )
+        _stamp_export(row_id, "adp_sheet")
+        return html_content, 200, {"Content-Type": "text/html; charset=utf-8"}
+
+    # CSV path
+    builders = {
+        "humanity": build_humanity_csv,
+        "qu":       build_qu_csv,
+        "zignal":   build_zignal_csv,
+        "adp":      build_adp_csv,
+    }
+    rows = builders[system](emp)
+    filename = f"{system}_{name_slug}.csv"
+
+    # Also save a copy to the employee's Drive folder (audit trail)
+    if folder_id:
+        csv_buf = _io.StringIO()
+        _csv.writer(csv_buf, quoting=_csv.QUOTE_MINIMAL).writerows(rows)
+        upload_file_to_drive(
+            filename, csv_buf.getvalue().encode("utf-8"),
+            "text/csv", folder_id=folder_id,
+        )
+
+    _stamp_export(row_id, system)
+    return _csv_response(filename, rows)
