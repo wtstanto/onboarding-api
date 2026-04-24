@@ -670,30 +670,9 @@ def complete_i9(row_id):
     return jsonify({"status": "ok"})
 
 
-@app.route("/submissions/<int:row_id>/status", methods=["PATCH"])
-def update_status(row_id):
-    if not check_api_key(request):
-        return jsonify({"error": "Unauthorized"}), 401
-    data = request.get_json()
-    if not data or "overallStatus" not in data:
-        return jsonify({"error": "Missing overallStatus"}), 400
-    # Detect header-row offset same as complete_i9
-    row_result = gas_post({"action": "getRow", "rowId": row_id})
-    actual_row_id = row_id
-    if row_result and "row" in row_result:
-        row = row_result["row"]
-        if row and row[0] and not _is_date(str(row[0])):
-            actual_row_id = row_id + 1
-    result = gas_post({
-        "action":        "updateStatus",
-        "rowId":         actual_row_id,
-        "overallStatus": data["overallStatus"],
-    })
-    if result is None:
-        return jsonify({"error": "GAS webhook not configured"}), 500
-    if "error" in result:
-        return jsonify({"error": result["error"]}), 500
-    return jsonify({"status": "ok"})
+# (Legacy /submissions/<id>/status endpoint removed — replaced by lifecycle
+#  status endpoint at the bottom of this file. The old one wrote to the
+#  overallStatus column which is no longer read by the admin.)
 
 
 @app.route("/debug", methods=["GET"])
