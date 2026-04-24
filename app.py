@@ -37,72 +37,32 @@ I9_PATH    = os.path.join(BASE_DIR, "forms", "i9.pdf")
 
 # ─── Environment ─────────────────────────────────────────────────────────────
 
-GAS_WEBHOOK_URL      = os.environ.get("GAS_WEBHOOK_URL", "")
-ADMIN_API_KEY        = os.environ.get("ADMIN_API_KEY", "")
-RESEND_API_KEY       = os.environ.get("RESEND_API_KEY", "")
-HANDBOOK_PATH        = os.path.join(BASE_DIR, "handbook.pdf")
-GAS_SECRET           = os.environ.get("GAS_SECRET", "")
-DRIVE_FOLDER_ID      = os.environ.get("DRIVE_FOLDER_ID", "")
-
-# ── Demo store (separate GAS deployment + Drive folder) ──────────────────────
-DEMO_API_KEY         = os.environ.get("DEMO_API_KEY", "demo")
-DEMO_GAS_URL         = os.environ.get("DEMO_GAS_URL", "")
-DEMO_DRIVE_FOLDER_ID = os.environ.get("DEMO_DRIVE_FOLDER_ID", "")
+GAS_WEBHOOK_URL  = os.environ.get("GAS_WEBHOOK_URL", "")
+ADMIN_API_KEY    = os.environ.get("ADMIN_API_KEY", "")
+GMAIL_USER       = os.environ.get("GMAIL_USER", "")
+GMAIL_APP_PASS   = os.environ.get("GMAIL_APP_PASSWORD", "")
+HANDBOOK_PATH    = os.path.join(BASE_DIR, "handbook.pdf")
+GAS_SECRET      = os.environ.get("GAS_SECRET", "")
+DRIVE_FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID", "")
 
 
 def check_api_key(req):
-    key = req.headers.get("X-API-Key", "")
     if not ADMIN_API_KEY:
         return True
-    if key == ADMIN_API_KEY:
-        return True
-    if DEMO_API_KEY and key == DEMO_API_KEY:
-        return True
-    return False
-
-
-_GAS_DEFAULT = object()  # sentinel — distinguishes "not passed" from "explicitly None"
-
-def resolve_store(req):
-    """Return (gas_url, drive_folder_id) for the request's API key.
-    Returns (None, None) for demo requests when no DEMO_GAS_URL is configured,
-    which causes gas_post() to short-circuit (PDFs still generated, no sheet/Drive writes).
-    """
-    key = req.headers.get("X-API-Key", "")
-    if DEMO_API_KEY and key == DEMO_API_KEY:
-        return DEMO_GAS_URL or None, DEMO_DRIVE_FOLDER_ID or None
-    return GAS_WEBHOOK_URL, DRIVE_FOLDER_ID
-
-
-# ─── Employer config cache (backed by GAS PropertiesService) ─────────────────
-import time as _time
-_cfg_cache: dict = {}  # keyed by gas_url
-
-def get_employer_config(gas_url=None) -> dict:
-    """Return shared employer config from GAS PropertiesService (10-min TTL cache)."""
-    url = gas_url or GAS_WEBHOOK_URL
-    entry = _cfg_cache.get(url, {"data": {}, "ts": 0.0})
-    if _time.time() - entry["ts"] > 600:
-        result = gas_post({"action": "getConfig"}, timeout=10, gas_url=url)
-        if result and "businessName" in result:
-            _cfg_cache[url] = {"data": result, "ts": _time.time()}
-    return _cfg_cache.get(url, {"data": {}})["data"]
+    return req.headers.get("X-API-Key", "") == ADMIN_API_KEY
 
 
 # ─── Google Apps Script helpers ──────────────────────────────────────────────
 
-def gas_post(payload, timeout=30, gas_url=_GAS_DEFAULT):
-    """POST to GAS webhook, follow redirect as GET, return parsed JSON or None.
-    Pass gas_url=None explicitly to skip the call entirely (used by demo store).
-    """
-    url = GAS_WEBHOOK_URL if gas_url is _GAS_DEFAULT else gas_url
-    if not url:
+def gas_post(payload, timeout=30):
+    """POST to GAS webhook, follow redirect as GET, return parsed JSON or None."""
+    if not GAS_WEBHOOK_URL:
         return None
     try:
         payload["secret"] = GAS_SECRET
         headers = {"Content-Type": "application/json"}
         res = http_requests.post(
-            url, json=payload,
+            GAS_WEBHOOK_URL, json=payload,
             headers=headers, timeout=timeout,
             allow_redirects=False,
         )
@@ -116,23 +76,22 @@ def gas_post(payload, timeout=30, gas_url=_GAS_DEFAULT):
         return None
 
 
-def create_employee_folder(folder_name, gas_url=None, drive_folder_id=None):
+def create_employee_folder(folder_name):
     """Create a subfolder in the main Drive folder. Returns (folderId, url) or (None, None)."""
-    folder_id = drive_folder_id or DRIVE_FOLDER_ID
-    if not folder_id:
+    if not DRIVE_FOLDER_ID:
         return None, None
     result = gas_post({
         "action":        "createFolder",
-        "parentFolderId": folder_id,
+        "parentFolderId": DRIVE_FOLDER_ID,
         "folderName":    folder_name,
-    }, timeout=30, gas_url=gas_url)
+    }, timeout=30)
     print(f"[Drive] createFolder '{folder_name}' result: {result}")
     if result and "folderId" in result:
         return result["folderId"], result.get("url", "")
     return None, None
 
 
-def upload_file_to_drive(filename, file_bytes, mimetype, folder_id=None, gas_url=None):
+def upload_file_to_drive(filename, file_bytes, mimetype, folder_id=None):
     """Upload file_bytes to Drive via GAS. Returns (fileId, url) or (None, None)."""
     target = folder_id or DRIVE_FOLDER_ID
     if not target:
@@ -143,7 +102,7 @@ def upload_file_to_drive(filename, file_bytes, mimetype, folder_id=None, gas_url
         "filename": filename,
         "mimeType": mimetype,
         "fileData": base64.b64encode(file_bytes).decode("utf-8"),
-    }, timeout=60, gas_url=gas_url)
+    }, timeout=60)
     if result and "fileId" in result:
         return result["fileId"], result.get("url", "")
     return None, None
@@ -170,7 +129,7 @@ def replace_drive_file(file_id, filename, file_bytes):
     return None, None
 
 
-def log_to_sheet(data, zip_drive_url="", i9_file_id="", gas_url=None):
+def log_to_sheet(data, zip_drive_url="", i9_file_id=""):
     ssn    = data.get("ssn", "")
     digits = "".join(c for c in ssn if c.isdigit())
     masked = f"***-**-{digits[-4:]}" if len(digits) >= 4 else "***"
@@ -193,7 +152,7 @@ def log_to_sheet(data, zip_drive_url="", i9_file_id="", gas_url=None):
         "ecName":         data.get("ecName",          ""),
         "ecRelationship": data.get("ecRelationship",  ""),
         "ecPhone":        data.get("ecPhone",         ""),
-    }, timeout=90, gas_url=gas_url)
+    })
     return result.get("rowId") if result else None
 
 
@@ -506,7 +465,7 @@ def fill_i9_section2(i9_bytes, section2_data, start_date=""):
     first_day = fmt_date(start_date) if start_date else today
     emp_name  = section2_data.get("empName", "")
     emp_addr  = section2_data.get("employerAddress", "")
-    emp_org   = section2_data.get("employerOrg", "Auntie Anne's")
+    emp_org   = "Auntie Anne's"
     doc_type  = section2_data.get("docType", "listA")
 
     text_fields = {
@@ -567,14 +526,6 @@ def fill():
         last  = data.get("lastName",  "").strip()
         name  = f"{first}_{last}".replace(" ", "_")
 
-        # Resolve which GAS/Drive to use based on API key
-        store_gas_url, store_folder_id = resolve_store(request)
-
-        # Inject employer info from server-side config store (falls back to defaults)
-        cfg = get_employer_config(gas_url=store_gas_url)
-        data.setdefault("employerName", cfg.get("businessName", "Your Store"))
-        data.setdefault("employerEIN",  cfg.get("ein", ""))
-
         w4_bytes    = fill_w4(data)
         de_w4_bytes = fill_de_w4(data)
         i9_bytes    = fill_i9_section1(data)
@@ -604,24 +555,22 @@ def fill():
         zip_bytes = zip_buf.getvalue()
 
         # Create per-employee subfolder in Drive
-        emp_folder_id, emp_folder_url = create_employee_folder(
-            f"{first} {last}", gas_url=store_gas_url, drive_folder_id=store_folder_id
-        )
-        target_folder = emp_folder_id or store_folder_id
+        emp_folder_id, emp_folder_url = create_employee_folder(f"{first} {last}")
+        target_folder = emp_folder_id or DRIVE_FOLDER_ID
 
         # Upload individual PDFs into the employee's folder
         i9_file_id, _ = upload_file_to_drive(
-            f"{name}_I9.pdf", i9_bytes, "application/pdf", target_folder, gas_url=store_gas_url
+            f"{name}_I9.pdf", i9_bytes, "application/pdf", target_folder
         )
         upload_file_to_drive(
-            f"{name}_W4_Federal.pdf", w4_bytes, "application/pdf", target_folder, gas_url=store_gas_url
+            f"{name}_W4_Federal.pdf", w4_bytes, "application/pdf", target_folder
         )
         upload_file_to_drive(
-            f"{name}_W4_Delaware.pdf", de_w4_bytes, "application/pdf", target_folder, gas_url=store_gas_url
+            f"{name}_W4_Delaware.pdf", de_w4_bytes, "application/pdf", target_folder
         )
 
         # Log to Sheet — driveUrl points to the employee's folder
-        log_to_sheet(data, zip_drive_url=emp_folder_url or "", i9_file_id=i9_file_id or "", gas_url=store_gas_url)
+        log_to_sheet(data, zip_drive_url=emp_folder_url or "", i9_file_id=i9_file_id or "")
 
         return send_file(
             io.BytesIO(zip_bytes),
@@ -638,8 +587,7 @@ def fill():
 def get_submissions():
     if not check_api_key(request):
         return jsonify({"error": "Unauthorized"}), 401
-    store_gas_url, _ = resolve_store(request)
-    result = gas_post({"action": "getAll"}, gas_url=store_gas_url)
+    result = gas_post({"action": "getAll"})
     if result is None:
         return jsonify([])
     if "error" in result:
@@ -656,9 +604,8 @@ def complete_i9(row_id):
     if not data:
         return jsonify({"error": "No JSON data"}), 400
 
-    store_gas_url, _ = resolve_store(request)
     # ── Round trip 1: get row data (start date + I-9 file ID) ────────────────
-    row_result = gas_post({"action": "getRow", "rowId": row_id}, timeout=60, gas_url=store_gas_url)
+    row_result = gas_post({"action": "getRow", "rowId": row_id}, timeout=60)
     if row_result is None:
         return jsonify({"error": "GAS webhook not configured"}), 500
     if "error" in row_result:
@@ -677,15 +624,11 @@ def complete_i9(row_id):
         return jsonify({"error": "I-9 file not found for this employee"}), 404
 
     # ── Round trip 2: download current I-9 PDF from Drive ────────────────────
-    file_result = gas_post({"action": "getFile", "fileId": i9_file_id}, timeout=60, gas_url=store_gas_url)
+    file_result = gas_post({"action": "getFile", "fileId": i9_file_id}, timeout=60)
     if file_result is None or "error" in (file_result or {}):
         return jsonify({"error": "Failed to download I-9 from Drive"}), 500
 
     i9_bytes   = base64.b64decode(file_result["fileData"])
-    # Inject employer org name from server-side config if not provided
-    if not data.get("employerOrg"):
-        cfg = get_employer_config()
-        data["employerOrg"] = cfg.get("businessName", "Auntie Anne's")
     updated_i9 = fill_i9_section2(i9_bytes, data, str(start_date))
 
     # Overlay employer's drawn signature on Section 2 (page 0 only).
@@ -703,7 +646,7 @@ def complete_i9(row_id):
         "fileId":   i9_file_id,
         "filename": f"I9_COMPLETED_row{actual_row_id}.pdf",
         "fileData": base64.b64encode(updated_i9).decode("utf-8"),
-    }, timeout=60, gas_url=store_gas_url)
+    }, timeout=60)
     if replace_result is None or "error" in (replace_result or {}):
         return jsonify({"error": "Failed to replace I-9 file in Drive"}), 500
 
@@ -719,7 +662,7 @@ def complete_i9(row_id):
         "expDate":     data.get("expDate",   ""),
         "empName":     data.get("empName",   ""),
         "newI9FileId": new_file_id,
-    }, timeout=60, gas_url=store_gas_url)
+    }, timeout=60)
     if complete_result is None:
         return jsonify({"error": "GAS webhook not configured"}), 500
     if "error" in complete_result:
@@ -734,9 +677,8 @@ def update_status(row_id):
     data = request.get_json()
     if not data or "overallStatus" not in data:
         return jsonify({"error": "Missing overallStatus"}), 400
-    store_gas_url, _ = resolve_store(request)
     # Detect header-row offset same as complete_i9
-    row_result = gas_post({"action": "getRow", "rowId": row_id}, gas_url=store_gas_url)
+    row_result = gas_post({"action": "getRow", "rowId": row_id})
     actual_row_id = row_id
     if row_result and "row" in row_result:
         row = row_result["row"]
@@ -746,42 +688,12 @@ def update_status(row_id):
         "action":        "updateStatus",
         "rowId":         actual_row_id,
         "overallStatus": data["overallStatus"],
-    }, gas_url=store_gas_url)
+    })
     if result is None:
         return jsonify({"error": "GAS webhook not configured"}), 500
     if "error" in result:
         return jsonify({"error": result["error"]}), 500
     return jsonify({"status": "ok"})
-
-
-@app.route("/submissions/<int:row_id>/working-papers", methods=["POST"])
-def upload_working_papers(row_id):
-    if not check_api_key(request):
-        return jsonify({"error": "Unauthorized"}), 401
-    data = request.get_json()
-    if not data or not data.get("fileData"):
-        return jsonify({"error": "Missing fileData"}), 400
-    store_gas_url, _ = resolve_store(request)
-    # Detect header-row offset
-    actual_row_id = row_id
-    row_result = gas_post({"action": "getRow", "rowId": row_id}, gas_url=store_gas_url)
-    if row_result and "row" in row_result:
-        row = row_result["row"]
-        if row and row[0] and not _is_date(str(row[0])):
-            actual_row_id = row_id + 1
-    result = gas_post({
-        "action":   "uploadWorkingPapers",
-        "rowId":    actual_row_id,
-        "folderId": data.get("folderId", ""),
-        "fileData": data.get("fileData", ""),
-        "mimeType": data.get("mimeType", "image/jpeg"),
-        "filename": data.get("filename", "working_papers"),
-    }, gas_url=store_gas_url)
-    if result is None:
-        return jsonify({"error": "GAS webhook not configured"}), 500
-    if "error" in result:
-        return jsonify({"error": result["error"]}), 500
-    return jsonify({"status": "ok", "fileId": result.get("fileId", "")})
 
 
 @app.route("/debug", methods=["GET"])
@@ -792,38 +704,6 @@ def debug():
         "admin_key_set":     bool(ADMIN_API_KEY),
         "gas_secret_set":    bool(GAS_SECRET),
     })
-
-
-@app.route("/config", methods=["GET"])
-def get_config():
-    """Return shared employer config from GAS PropertiesService."""
-    if not check_api_key(request):
-        return jsonify({"error": "Unauthorized"}), 401
-    store_gas_url, _ = resolve_store(request)
-    result = gas_post({"action": "getConfig"}, gas_url=store_gas_url)
-    return jsonify(result or {})
-
-
-@app.route("/config", methods=["PATCH"])
-def update_config():
-    """Save shared employer config to GAS PropertiesService and bust cache."""
-    if not check_api_key(request):
-        return jsonify({"error": "Unauthorized"}), 401
-    data = request.get_json()
-    if not data:
-        return jsonify({"error": "No JSON data"}), 400
-    allowed = {"businessName", "managerName", "managerPhone", "ein", "address", "email", "state"}
-    payload = {k: v for k, v in data.items() if k in allowed}
-    if not payload:
-        return jsonify({"error": "No valid config fields provided"}), 400
-    store_gas_url, _ = resolve_store(request)
-    result = gas_post({"action": "setConfig", **payload}, gas_url=store_gas_url)
-    if result is None:
-        return jsonify({"error": "GAS webhook not configured"}), 500
-    # Bust cache for this store
-    if store_gas_url in _cfg_cache:
-        _cfg_cache[store_gas_url]["ts"] = 0.0
-    return jsonify({"status": "ok"})
 
 
 WELCOME_EMAIL_TEMPLATE = """\
@@ -879,57 +759,53 @@ def send_welcome():
     if missing:
         return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
 
-    if not RESEND_API_KEY:
-        return jsonify({"error": "RESEND_API_KEY not configured in Railway"}), 500
+    if not GMAIL_USER or not GMAIL_APP_PASS:
+        return jsonify({"error": "Email not configured — set GMAIL_USER and GMAIL_APP_PASSWORD in Railway"}), 500
 
     first_name    = data["firstName"]
+    last_name     = data.get("lastName", "")
+    to_email      = data["email"]
+    pay_rate      = data["payRate"]
+    first_paycheck = data["firstPaycheck"]
+    start_week    = data.get("startWeek", "")
     sender_name   = data["senderName"]
     sender_phone  = data.get("senderPhone", "")
     sender_email  = data["senderEmail"]
 
     body = WELCOME_EMAIL_TEMPLATE.format(
         firstName=first_name,
-        payRate=data["payRate"],
-        startWeek=data.get("startWeek", ""),
-        firstPaycheck=data["firstPaycheck"],
+        payRate=pay_rate,
+        startWeek=start_week,
+        firstPaycheck=first_paycheck,
         senderName=sender_name,
         senderPhone=sender_phone,
     )
 
-    # Build Resend payload
-    to_list = [data["email"]]
-    payload = {
-        "from":     f"Auntie Anne's Christiana Mall <tyler@gomiddleman.com>",
-        "to":       to_list,
-        "reply_to": sender_email,
-        "subject":  f"Welcome to the Team, {first_name}! 🥨",
-        "text":     body,
-    }
-    cc = data.get("cc", "").strip()
-    if cc:
-        payload["cc"] = [a.strip() for a in cc.split(",") if a.strip()]
+    subject = f"Welcome to the Auntie Anne's Christiana Mall Team, {first_name}!"
 
-    # Attach handbook from Drive via GAS if available
-    handbook_attachment = None
-    handbook_file_id = "1MkAHFaMDj3Ejkjid73nvNSpfxcq3eo2s"
-    gas_result = gas_post({"action": "getFile", "fileId": handbook_file_id}, timeout=20)
-    if gas_result and gas_result.get("fileData"):
-        handbook_attachment = gas_result["fileData"]
-        payload["attachments"] = [{
-            "filename": "Auntie_Annes_Employee_Handbook.pdf",
-            "content":  handbook_attachment,
-        }]
+    msg = MIMEMultipart()
+    msg["From"]     = f"{sender_name} <{GMAIL_USER}>"
+    msg["To"]       = to_email
+    msg["Reply-To"] = f"{sender_name} <{sender_email}>"
+    msg["Subject"]  = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    # Attach handbook PDF if it exists
+    if os.path.exists(HANDBOOK_PATH):
+        with open(HANDBOOK_PATH, "rb") as f:
+            part = MIMEBase("application", "octet-stream")
+            part.set_payload(f.read())
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", "attachment", filename="Auntie_Annes_Employee_Handbook.pdf")
+        msg.attach(part)
 
     try:
-        res = http_requests.post(
-            "https://api.resend.com/emails",
-            headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=20,
-        )
-        if res.status_code not in (200, 201):
-            return jsonify({"error": res.json().get("message", f"Resend error {res.status_code}")}), 500
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(GMAIL_USER, GMAIL_APP_PASS)
+            server.sendmail(GMAIL_USER, to_email, msg.as_string())
         return jsonify({"status": "ok"})
+    except smtplib.SMTPAuthenticationError:
+        return jsonify({"error": "Gmail authentication failed — check GMAIL_USER and GMAIL_APP_PASSWORD"}), 500
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -937,7 +813,6 @@ def send_welcome():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
-
 """
 APPEND to /mnt/onboarding-api/app.py — do not replace any existing code.
 
@@ -1332,3 +1207,63 @@ def export_for_system(row_id, system):
 
     _stamp_export(row_id, system)
     return _csv_response(filename, rows)
+
+
+# ── /de112b: working papers (under-18 employment certificate) ─────────────
+# Two endpoints:
+#   PATCH /submissions/<id>/working-papers       — toggle 'given' or 'returned' boolean
+#   POST  /submissions/<id>/working-papers/upload — upload photo of completed papers
+# Both delegate to GAS for sheet writes / Drive uploads.
+
+@app.route("/submissions/<int:row_id>/working-papers", methods=["PATCH"])
+def update_working_papers(row_id):
+    """Toggle a working-papers boolean (given or returned)."""
+    if request.headers.get("X-API-Key") != ADMIN_API_KEY:
+        return jsonify({"error": "Unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    field = body.get("field")
+    if field not in ("given", "returned"):
+        return jsonify({"error": "field must be 'given' or 'returned'"}), 400
+    payload = {
+        "secret": GAS_SECRET,
+        "action": "setWorkingPapers",
+        "rowId":  row_id,
+        "field":  field,
+        "value":  body.get("value", True),
+    }
+    try:
+        r = _requests.post(GAS_WEBHOOK_URL, json=payload, timeout=90)
+        r.raise_for_status()
+        return jsonify(r.json())
+    except Exception as e:
+        return jsonify({"error": f"GAS error: {e}"}), 502
+
+
+@app.route("/submissions/<int:row_id>/working-papers/upload", methods=["POST"])
+def upload_working_papers(row_id):
+    """Upload a photo of the completed working papers to the employee's Drive folder.
+
+    Expects JSON body with:
+      - fileData: base64-encoded image
+      - mimeType: e.g. 'image/jpeg' (optional, defaults to image/jpeg)
+      - filename: optional display name
+    """
+    if request.headers.get("X-API-Key") != ADMIN_API_KEY:
+        return jsonify({"error": "Unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    if not body.get("fileData"):
+        return jsonify({"error": "fileData (base64) required"}), 400
+    payload = {
+        "secret":   GAS_SECRET,
+        "action":   "uploadWorkingPapers",
+        "rowId":    row_id,
+        "fileData": body["fileData"],
+        "mimeType": body.get("mimeType", "image/jpeg"),
+        "filename": body.get("filename") or f"working-papers-{row_id}.jpg",
+    }
+    try:
+        r = _requests.post(GAS_WEBHOOK_URL, json=payload, timeout=90)
+        r.raise_for_status()
+        return jsonify(r.json())
+    except Exception as e:
+        return jsonify({"error": f"GAS error: {e}"}), 502
