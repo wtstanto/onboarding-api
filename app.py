@@ -1267,3 +1267,60 @@ def upload_working_papers(row_id):
         return jsonify(r.json())
     except Exception as e:
         return jsonify({"error": f"GAS error: {e}"}), 502
+
+
+# ── /de112b: employee lifecycle status ────────────────────────────────────
+# Employees live in one of three states tracked by the Status column (AN):
+#   onboarding → active → inactive
+# Transitions:
+#   onboarding → active    when Ashley clicks "Mark as fully onboarded"
+#   active     → inactive  when Ashley clicks "Mark as inactive"
+# Reactivation (inactive → active/onboarding) isn't wired up yet — will come later.
+
+_VALID_STATUSES = ("onboarding", "active", "inactive")
+
+
+@app.route("/submissions/<int:row_id>/status", methods=["PATCH"])
+def update_status(row_id):
+    """Update an employee's lifecycle status (onboarding/active/inactive)."""
+    if request.headers.get("X-API-Key") != ADMIN_API_KEY:
+        return jsonify({"error": "Unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    status = body.get("status")
+    if status not in _VALID_STATUSES:
+        return jsonify({"error": f"status must be one of {_VALID_STATUSES}"}), 400
+    payload = {
+        "secret": GAS_SECRET,
+        "action": "setStatus",
+        "rowId":  row_id,
+        "status": status,
+        "reason": body.get("reason", ""),
+    }
+    try:
+        r = http_requests.post(GAS_WEBHOOK_URL, json=payload, timeout=90)
+        r.raise_for_status()
+        return jsonify(r.json())
+    except Exception as e:
+        return jsonify({"error": f"GAS error: {e}"}), 502
+
+
+@app.route("/submissions/<int:row_id>/folder-url", methods=["GET"])
+def get_folder_url(row_id):
+    """Return the Drive folder URL for an employee. Resolved from the I-9 file's parent."""
+    if request.headers.get("X-API-Key") != ADMIN_API_KEY:
+        return jsonify({"error": "Unauthorized"}), 401
+    payload = {
+        "secret": GAS_SECRET,
+        "action": "getFileParent",
+        "rowId":  row_id,
+    }
+    try:
+        r = http_requests.post(GAS_WEBHOOK_URL, json=payload, timeout=90)
+        r.raise_for_status()
+        data = r.json()
+        folder_id = data.get("folderId")
+        if not folder_id:
+            return jsonify({"url": None, "error": "No Drive folder found"}), 404
+        return jsonify({"url": f"https://drive.google.com/drive/folders/{folder_id}"})
+    except Exception as e:
+        return jsonify({"error": f"GAS error: {e}"}), 502
