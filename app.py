@@ -1232,7 +1232,7 @@ def update_working_papers(row_id):
         "value":  body.get("value", True),
     }
     try:
-        r = _requests.post(GAS_WEBHOOK_URL, json=payload, timeout=90)
+        r = http_requests.post(GAS_WEBHOOK_URL, json=payload, timeout=90)
         r.raise_for_status()
         return jsonify(r.json())
     except Exception as e:
@@ -1262,7 +1262,7 @@ def upload_working_papers(row_id):
         "filename": body.get("filename") or f"working-papers-{row_id}.jpg",
     }
     try:
-        r = _requests.post(GAS_WEBHOOK_URL, json=payload, timeout=90)
+        r = http_requests.post(GAS_WEBHOOK_URL, json=payload, timeout=90)
         r.raise_for_status()
         return jsonify(r.json())
     except Exception as e:
