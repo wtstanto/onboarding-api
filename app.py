@@ -1285,21 +1285,28 @@ def update_status(row_id):
 
 @app.route("/submissions/<int:row_id>/folder-url", methods=["GET"])
 def get_folder_url(row_id):
-    """Return the Drive folder URL for an employee. Resolved from the I-9 file's parent."""
+    """Return the Drive folder URL for an employee.
+
+    GAS checks the cached driveFolderId column (AR) first; falls back to
+    deriving from the I-9 file's parent. This means imported/legacy employees
+    that point at a shared folder (no I-9 file in our system) still work.
+    """
     if request.headers.get("X-API-Key") != ADMIN_API_KEY:
         return jsonify({"error": "Unauthorized"}), 401
     payload = {
         "secret": GAS_SECRET,
-        "action": "getFileParent",
+        "action": "getEmployeeFolderUrl",
         "rowId":  row_id,
     }
     try:
         r = http_requests.post(GAS_WEBHOOK_URL, json=payload, timeout=90)
         r.raise_for_status()
         data = r.json()
-        folder_id = data.get("folderId")
-        if not folder_id:
+        if data.get("error"):
+            return jsonify({"url": None, "error": data["error"]}), 404
+        url = data.get("url")
+        if not url:
             return jsonify({"url": None, "error": "No Drive folder found"}), 404
-        return jsonify({"url": f"https://drive.google.com/drive/folders/{folder_id}"})
+        return jsonify({"url": url, "folderId": data.get("folderId"), "source": data.get("source")})
     except Exception as e:
         return jsonify({"error": f"GAS error: {e}"}), 502
