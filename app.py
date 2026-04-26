@@ -856,10 +856,10 @@ def send_welcome():
         if len(digits) == 10:
             digits = "1" + digits
         to_number = "+" + digits
-        link_line = f"\n\nComplete your paperwork here: {onboard_link}" if onboard_link else ""
+        link_line = f" Start your paperwork here: {onboard_link}" if onboard_link else ""
         sms_body = (
-            f"Hi {first_name}! You've been hired at Auntie Anne's Christiana Mall. "
-            f"A welcome email was just sent to {to_email} with all the details.{link_line} "
+            f"Hey {first_name}, welcome to Auntie Anne's! An email was just sent to {to_email} "
+            f"with important onboarding details — if you don't see it, check your spam folder.{link_line} "
             f"Reply STOP to opt out."
         )
         sms_data = {"To": to_number, "Body": sms_body}
