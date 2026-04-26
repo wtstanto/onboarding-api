@@ -42,8 +42,10 @@ ADMIN_API_KEY    = os.environ.get("ADMIN_API_KEY", "")
 GMAIL_USER       = os.environ.get("GMAIL_USER", "")
 GMAIL_APP_PASS   = os.environ.get("GMAIL_APP_PASSWORD", "")
 HANDBOOK_PATH    = os.path.join(BASE_DIR, "handbook.pdf")
-GAS_SECRET      = os.environ.get("GAS_SECRET", "")
-DRIVE_FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID", "")
+GAS_SECRET       = os.environ.get("GAS_SECRET", "")
+DRIVE_FOLDER_ID  = os.environ.get("DRIVE_FOLDER_ID", "")
+DEMO_GAS_URL     = os.environ.get("DEMO_GAS_URL", "")
+DEMO_DRIVE_FOLDER = os.environ.get("DEMO_DRIVE_FOLDER_ID", "")
 
 
 def check_api_key(req):
@@ -54,15 +56,16 @@ def check_api_key(req):
 
 # ─── Google Apps Script helpers ──────────────────────────────────────────────
 
-def gas_post(payload, timeout=30):
+def gas_post(payload, timeout=30, gas_url=None):
     """POST to GAS webhook, follow redirect as GET, return parsed JSON or None."""
-    if not GAS_WEBHOOK_URL:
+    url = gas_url or GAS_WEBHOOK_URL
+    if not url:
         return None
     try:
         payload["secret"] = GAS_SECRET
         headers = {"Content-Type": "application/json"}
         res = http_requests.post(
-            GAS_WEBHOOK_URL, json=payload,
+            url, json=payload,
             headers=headers, timeout=timeout,
             allow_redirects=False,
         )
@@ -76,22 +79,23 @@ def gas_post(payload, timeout=30):
         return None
 
 
-def create_employee_folder(folder_name):
+def create_employee_folder(folder_name, gas_url=None, folder_id=None):
     """Create a subfolder in the main Drive folder. Returns (folderId, url) or (None, None)."""
-    if not DRIVE_FOLDER_ID:
+    parent = folder_id or DRIVE_FOLDER_ID
+    if not parent:
         return None, None
     result = gas_post({
         "action":        "createFolder",
-        "parentFolderId": DRIVE_FOLDER_ID,
+        "parentFolderId": parent,
         "folderName":    folder_name,
-    }, timeout=30)
+    }, timeout=30, gas_url=gas_url)
     print(f"[Drive] createFolder '{folder_name}' result: {result}")
     if result and "folderId" in result:
         return result["folderId"], result.get("url", "")
     return None, None
 
 
-def upload_file_to_drive(filename, file_bytes, mimetype, folder_id=None):
+def upload_file_to_drive(filename, file_bytes, mimetype, folder_id=None, gas_url=None):
     """Upload file_bytes to Drive via GAS. Returns (fileId, url) or (None, None)."""
     target = folder_id or DRIVE_FOLDER_ID
     if not target:
@@ -102,7 +106,7 @@ def upload_file_to_drive(filename, file_bytes, mimetype, folder_id=None):
         "filename": filename,
         "mimeType": mimetype,
         "fileData": base64.b64encode(file_bytes).decode("utf-8"),
-    }, timeout=60)
+    }, timeout=60, gas_url=gas_url)
     if result and "fileId" in result:
         return result["fileId"], result.get("url", "")
     return None, None
@@ -129,7 +133,7 @@ def replace_drive_file(file_id, filename, file_bytes):
     return None, None
 
 
-def log_to_sheet(data, zip_drive_url="", i9_file_id=""):
+def log_to_sheet(data, zip_drive_url="", i9_file_id="", gas_url=None):
     ssn    = data.get("ssn", "")
     digits = "".join(c for c in ssn if c.isdigit())
     masked = f"***-**-{digits[-4:]}" if len(digits) >= 4 else "***"
@@ -154,7 +158,7 @@ def log_to_sheet(data, zip_drive_url="", i9_file_id=""):
         "ecPhone":        data.get("ecPhone",         ""),
         "gender":         data.get("gender",          ""),
         "tshirtSize":     data.get("tshirtSize",      ""),
-    }, timeout=90)
+    }, timeout=90, gas_url=gas_url)
     return result.get("rowId") if result else None
 
 
@@ -562,18 +566,23 @@ def fill():
         import threading
         def _background(data, first, last, name, w4_bytes, de_w4_bytes, i9_bytes):
             try:
-                emp_folder_id, emp_folder_url = create_employee_folder(f"{first} {last}")
-                target_folder = emp_folder_id or DRIVE_FOLDER_ID
+                is_demo  = data.get("mode") == "demo"
+                g_url    = DEMO_GAS_URL    if is_demo else None
+                g_folder = DEMO_DRIVE_FOLDER if is_demo else None
+                emp_folder_id, emp_folder_url = create_employee_folder(
+                    f"{first} {last}", gas_url=g_url, folder_id=g_folder
+                )
+                target_folder = emp_folder_id or (g_folder or DRIVE_FOLDER_ID)
                 i9_file_id, _ = upload_file_to_drive(
-                    f"{name}_I9.pdf", i9_bytes, "application/pdf", target_folder
+                    f"{name}_I9.pdf", i9_bytes, "application/pdf", target_folder, gas_url=g_url
                 )
                 upload_file_to_drive(
-                    f"{name}_W4_Federal.pdf", w4_bytes, "application/pdf", target_folder
+                    f"{name}_W4_Federal.pdf", w4_bytes, "application/pdf", target_folder, gas_url=g_url
                 )
                 upload_file_to_drive(
-                    f"{name}_W4_Delaware.pdf", de_w4_bytes, "application/pdf", target_folder
+                    f"{name}_W4_Delaware.pdf", de_w4_bytes, "application/pdf", target_folder, gas_url=g_url
                 )
-                log_to_sheet(data, zip_drive_url=emp_folder_url or "", i9_file_id=i9_file_id or "")
+                log_to_sheet(data, zip_drive_url=emp_folder_url or "", i9_file_id=i9_file_id or "", gas_url=g_url)
             except Exception as exc:
                 print(f"[background /fill] Drive/Sheet error: {exc}")
 
