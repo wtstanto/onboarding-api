@@ -44,14 +44,32 @@ GMAIL_APP_PASS   = os.environ.get("GMAIL_APP_PASSWORD", "")
 HANDBOOK_PATH    = os.path.join(BASE_DIR, "handbook.pdf")
 GAS_SECRET       = os.environ.get("GAS_SECRET", "")
 DRIVE_FOLDER_ID  = os.environ.get("DRIVE_FOLDER_ID", "")
-DEMO_GAS_URL     = os.environ.get("DEMO_GAS_URL", "")
+DEMO_GAS_URL      = os.environ.get("DEMO_GAS_URL", "")
 DEMO_DRIVE_FOLDER = os.environ.get("DEMO_DRIVE_FOLDER_ID", "")
+DEMO_ADMIN_API_KEY = os.environ.get("DEMO_ADMIN_API_KEY", "")
 
 
 def check_api_key(req):
+    key = req.headers.get("X-API-Key", "")
+    if DEMO_ADMIN_API_KEY and key == DEMO_ADMIN_API_KEY:
+        return True
     if not ADMIN_API_KEY:
         return True
-    return req.headers.get("X-API-Key", "") == ADMIN_API_KEY
+    return key == ADMIN_API_KEY
+
+
+def is_demo_request(req):
+    """True when the request was authenticated with the demo API key."""
+    key = req.headers.get("X-API-Key", "")
+    return bool(DEMO_ADMIN_API_KEY and key == DEMO_ADMIN_API_KEY)
+
+
+def demo_gas_url(req):
+    return DEMO_GAS_URL if is_demo_request(req) else None
+
+
+def demo_folder(req):
+    return DEMO_DRIVE_FOLDER if is_demo_request(req) else None
 
 
 # ─── Google Apps Script helpers ──────────────────────────────────────────────
@@ -607,7 +625,7 @@ def fill():
 def get_submissions():
     if not check_api_key(request):
         return jsonify({"error": "Unauthorized"}), 401
-    result = gas_post({"action": "getAll"})
+    result = gas_post({"action": "getAll"}, gas_url=demo_gas_url(request))
     if result is None:
         return jsonify([])
     if "error" in result:
@@ -624,8 +642,9 @@ def complete_i9(row_id):
     if not data:
         return jsonify({"error": "No JSON data"}), 400
 
+    g_url = demo_gas_url(request)
     # ── Round trip 1: get row data (start date + I-9 file ID) ────────────────
-    row_result = gas_post({"action": "getRow", "rowId": row_id}, timeout=60)
+    row_result = gas_post({"action": "getRow", "rowId": row_id}, timeout=60, gas_url=g_url)
     if row_result is None:
         return jsonify({"error": "GAS webhook not configured"}), 500
     if "error" in row_result:
@@ -644,7 +663,7 @@ def complete_i9(row_id):
         return jsonify({"error": "I-9 file not found for this employee"}), 404
 
     # ── Round trip 2: download current I-9 PDF from Drive ────────────────────
-    file_result = gas_post({"action": "getFile", "fileId": i9_file_id}, timeout=60)
+    file_result = gas_post({"action": "getFile", "fileId": i9_file_id}, timeout=60, gas_url=g_url)
     if file_result is None or "error" in (file_result or {}):
         return jsonify({"error": "Failed to download I-9 from Drive"}), 500
 
@@ -666,7 +685,7 @@ def complete_i9(row_id):
         "fileId":   i9_file_id,
         "filename": f"I9_COMPLETED_row{actual_row_id}.pdf",
         "fileData": base64.b64encode(updated_i9).decode("utf-8"),
-    }, timeout=60)
+    }, timeout=60, gas_url=g_url)
     if replace_result is None or "error" in (replace_result or {}):
         return jsonify({"error": "Failed to replace I-9 file in Drive"}), 500
 
@@ -682,7 +701,7 @@ def complete_i9(row_id):
         "expDate":     data.get("expDate",   ""),
         "empName":     data.get("empName",   ""),
         "newI9FileId": new_file_id,
-    }, timeout=60)
+    }, timeout=60, gas_url=g_url)
     if complete_result is None:
         return jsonify({"error": "GAS webhook not configured"}), 500
     if "error" in complete_result:
@@ -1139,7 +1158,7 @@ def update_employment(row_id):
         "location": data.get("location", ""),
         "deptCode": data.get("deptCode", ""),
         "hireDate": data.get("hireDate", ""),
-    }, timeout=20)
+    }, timeout=20, gas_url=demo_gas_url(request))
     if not result or "error" in result:
         return jsonify({"error": (result or {}).get("error", "GAS error")}), 500
     return jsonify({"status": "ok"})
@@ -1155,7 +1174,8 @@ def export_for_system(row_id, system):
     """
     # Query-param auth for file downloads (no custom header possible)
     provided = request.args.get("key", "") or request.headers.get("X-API-Key", "")
-    if ADMIN_API_KEY and provided != ADMIN_API_KEY:
+    valid_keys = {k for k in [ADMIN_API_KEY, DEMO_ADMIN_API_KEY] if k}
+    if valid_keys and provided not in valid_keys:
         return jsonify({"error": "Unauthorized"}), 401
 
     if system not in _EXPORT_SYSTEMS:
@@ -1219,25 +1239,21 @@ def export_for_system(row_id, system):
 @app.route("/submissions/<int:row_id>/working-papers", methods=["PATCH"])
 def update_working_papers(row_id):
     """Toggle a working-papers boolean (given or returned)."""
-    if request.headers.get("X-API-Key") != ADMIN_API_KEY:
+    if not check_api_key(request):
         return jsonify({"error": "Unauthorized"}), 401
     body = request.get_json(silent=True) or {}
     field = body.get("field")
     if field not in ("given", "returned"):
         return jsonify({"error": "field must be 'given' or 'returned'"}), 400
-    payload = {
-        "secret": GAS_SECRET,
+    result = gas_post({
         "action": "setWorkingPapers",
         "rowId":  row_id,
         "field":  field,
         "value":  body.get("value", True),
-    }
-    try:
-        r = http_requests.post(GAS_WEBHOOK_URL, json=payload, timeout=90)
-        r.raise_for_status()
-        return jsonify(r.json())
-    except Exception as e:
-        return jsonify({"error": f"GAS error: {e}"}), 502
+    }, timeout=90, gas_url=demo_gas_url(request))
+    if result is None:
+        return jsonify({"error": "GAS error"}), 502
+    return jsonify(result)
 
 
 @app.route("/submissions/<int:row_id>/working-papers/upload", methods=["POST"])
@@ -1284,25 +1300,21 @@ _VALID_STATUSES = ("onboarding", "active", "inactive")
 @app.route("/submissions/<int:row_id>/status", methods=["PATCH"])
 def update_status(row_id):
     """Update an employee's lifecycle status (onboarding/active/inactive)."""
-    if request.headers.get("X-API-Key") != ADMIN_API_KEY:
+    if not check_api_key(request):
         return jsonify({"error": "Unauthorized"}), 401
     body = request.get_json(silent=True) or {}
     status = body.get("status")
     if status not in _VALID_STATUSES:
         return jsonify({"error": f"status must be one of {_VALID_STATUSES}"}), 400
-    payload = {
-        "secret": GAS_SECRET,
+    result = gas_post({
         "action": "setStatus",
         "rowId":  row_id,
         "status": status,
         "reason": body.get("reason", ""),
-    }
-    try:
-        r = http_requests.post(GAS_WEBHOOK_URL, json=payload, timeout=90)
-        r.raise_for_status()
-        return jsonify(r.json())
-    except Exception as e:
-        return jsonify({"error": f"GAS error: {e}"}), 502
+    }, timeout=90, gas_url=demo_gas_url(request))
+    if result is None:
+        return jsonify({"error": "GAS error"}), 502
+    return jsonify(result)
 
 
 @app.route("/submissions/<int:row_id>/folder-url", methods=["GET"])
@@ -1313,22 +1325,17 @@ def get_folder_url(row_id):
     deriving from the I-9 file's parent. This means imported/legacy employees
     that point at a shared folder (no I-9 file in our system) still work.
     """
-    if request.headers.get("X-API-Key") != ADMIN_API_KEY:
+    if not check_api_key(request):
         return jsonify({"error": "Unauthorized"}), 401
-    payload = {
-        "secret": GAS_SECRET,
+    result = gas_post({
         "action": "getEmployeeFolderUrl",
         "rowId":  row_id,
-    }
-    try:
-        r = http_requests.post(GAS_WEBHOOK_URL, json=payload, timeout=90)
-        r.raise_for_status()
-        data = r.json()
-        if data.get("error"):
-            return jsonify({"url": None, "error": data["error"]}), 404
-        url = data.get("url")
-        if not url:
-            return jsonify({"url": None, "error": "No Drive folder found"}), 404
-        return jsonify({"url": url, "folderId": data.get("folderId"), "source": data.get("source")})
-    except Exception as e:
-        return jsonify({"error": f"GAS error: {e}"}), 502
+    }, timeout=90, gas_url=demo_gas_url(request))
+    if result is None:
+        return jsonify({"error": "GAS error"}), 502
+    if result.get("error"):
+        return jsonify({"url": None, "error": result["error"]}), 404
+    url = result.get("url")
+    if not url:
+        return jsonify({"url": None, "error": "No Drive folder found"}), 404
+    return jsonify({"url": url, "folderId": result.get("folderId"), "source": result.get("source")})
