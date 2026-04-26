@@ -48,6 +48,10 @@ DEMO_GAS_URL      = os.environ.get("DEMO_GAS_URL", "")
 DEMO_DRIVE_FOLDER = os.environ.get("DEMO_DRIVE_FOLDER_ID", "")
 DEMO_ADMIN_API_KEY = os.environ.get("DEMO_ADMIN_API_KEY", "")
 
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN  = os.environ.get("TWILIO_AUTH_TOKEN", "")
+TWILIO_FROM_NUMBER = os.environ.get("TWILIO_FROM_NUMBER", "")
+
 
 def check_api_key(req):
     key = req.headers.get("X-API-Key", "")
@@ -783,9 +787,11 @@ def send_welcome():
     first_name    = data["firstName"]
     last_name     = data.get("lastName", "")
     to_email      = data["email"]
+    hire_phone    = data.get("hirePhone", "").strip()
     pay_rate      = data["payRate"]
     first_paycheck = data["firstPaycheck"]
     start_week    = data.get("startWeek", "")
+    onboard_link  = data.get("onboardLink", "")
     sender_name   = data["senderName"]
     sender_phone  = data.get("senderPhone", "")
     sender_email  = data["senderEmail"]
@@ -821,11 +827,36 @@ def send_welcome():
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(GMAIL_USER, GMAIL_APP_PASS)
             server.sendmail(GMAIL_USER, to_email, msg.as_string())
-        return jsonify({"status": "ok"})
     except smtplib.SMTPAuthenticationError:
         return jsonify({"error": "Gmail authentication failed — check GMAIL_USER and GMAIL_APP_PASSWORD"}), 500
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+
+    # Optional SMS via Twilio
+    sms_status = None
+    if hire_phone and TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER:
+        # Normalize to E.164 (assume US if no country code)
+        digits = "".join(c for c in hire_phone if c.isdigit())
+        if len(digits) == 10:
+            digits = "1" + digits
+        to_number = "+" + digits
+        link_line = f"\n\nComplete your paperwork here: {onboard_link}" if onboard_link else ""
+        sms_body = (
+            f"Hi {first_name}! \U0001f968 You've been hired at Auntie Anne's Christiana Mall. "
+            f"A welcome email was just sent to {to_email} with all the details.{link_line}"
+        )
+        try:
+            http_requests.post(
+                f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json",
+                auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
+                data={"From": TWILIO_FROM_NUMBER, "To": to_number, "Body": sms_body},
+                timeout=10,
+            )
+            sms_status = "sent"
+        except Exception:
+            sms_status = "failed"
+
+    return jsonify({"status": "ok", "sms": sms_status})
 
 
 if __name__ == "__main__":
