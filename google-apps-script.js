@@ -6,7 +6,7 @@
 //
 // Set GAS_SECRET below to match the GAS_SECRET env var in Railway.
 
-const GAS_SECRET = 'don';   // ← change this if you change it in Railway
+const GAS_SECRET = 'Lq0-v_bj2kdZyqRG23vhmMn3OVdbOgr9qszYgCUG8kM';
 const SHEET_NAME = 'Sheet1';
 
 // Sheet column layout (1-indexed):
