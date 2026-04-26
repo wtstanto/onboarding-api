@@ -48,9 +48,10 @@ DEMO_GAS_URL      = os.environ.get("DEMO_GAS_URL", "")
 DEMO_DRIVE_FOLDER = os.environ.get("DEMO_DRIVE_FOLDER_ID", "")
 DEMO_ADMIN_API_KEY = os.environ.get("DEMO_ADMIN_API_KEY", "")
 
-TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
-TWILIO_AUTH_TOKEN  = os.environ.get("TWILIO_AUTH_TOKEN", "")
-TWILIO_FROM_NUMBER = os.environ.get("TWILIO_FROM_NUMBER", "")
+TWILIO_ACCOUNT_SID     = os.environ.get("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN      = os.environ.get("TWILIO_AUTH_TOKEN", "")
+TWILIO_FROM_NUMBER     = os.environ.get("TWILIO_FROM_NUMBER", "")
+TWILIO_MESSAGING_SID   = os.environ.get("TWILIO_MESSAGING_SERVICE_SID", "")
 
 
 def check_api_key(req):
@@ -834,7 +835,7 @@ def send_welcome():
 
     # Optional SMS via Twilio
     sms_status = None
-    if hire_phone and TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER:
+    if hire_phone and TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
         # Normalize to E.164 (assume US if no country code)
         digits = "".join(c for c in hire_phone if c.isdigit())
         if len(digits) == 10:
@@ -842,14 +843,20 @@ def send_welcome():
         to_number = "+" + digits
         link_line = f"\n\nComplete your paperwork here: {onboard_link}" if onboard_link else ""
         sms_body = (
-            f"Hi {first_name}! \U0001f968 You've been hired at Auntie Anne's Christiana Mall. "
-            f"A welcome email was just sent to {to_email} with all the details.{link_line}"
+            f"Hi {first_name}! You've been hired at Auntie Anne's Christiana Mall. "
+            f"A welcome email was just sent to {to_email} with all the details.{link_line} "
+            f"Reply STOP to opt out."
         )
+        sms_data = {"To": to_number, "Body": sms_body}
+        if TWILIO_MESSAGING_SID:
+            sms_data["MessagingServiceSid"] = TWILIO_MESSAGING_SID
+        else:
+            sms_data["From"] = TWILIO_FROM_NUMBER
         try:
             http_requests.post(
                 f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json",
                 auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
-                data={"From": TWILIO_FROM_NUMBER, "To": to_number, "Body": sms_body},
+                data=sms_data,
                 timeout=10,
             )
             sms_status = "sent"
