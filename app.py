@@ -152,8 +152,9 @@ def log_to_sheet(data, zip_drive_url="", i9_file_id=""):
         "ecName":         data.get("ecName",          ""),
         "ecRelationship": data.get("ecRelationship",  ""),
         "ecPhone":        data.get("ecPhone",         ""),
+        "gender":         data.get("gender",          ""),
         "tshirtSize":     data.get("tshirtSize",      ""),
-    })
+    }, timeout=90)
     return result.get("rowId") if result else None
 
 
