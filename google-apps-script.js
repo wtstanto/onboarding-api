@@ -19,6 +19,15 @@ const SHEET_NAME = 'Sheet1';
 // S(19) i9VerifiedBy      T(20) i9FileId         U(21) startDate
 // V(22) ecName            W(23) ecRelationship   X(24) ecPhone
 // Y(25) overallStatus
+// -- /de112b additions --
+// Z(26)  gender                   AA(27) payRate
+// AB(28) position                 AC(29) location
+// AD(30) deptCode                 AE(31) hireDate (confirmed)
+// AF(32) humanityCsvAt            AG(33) quCsvAt
+// AH(34) zignalCsvAt              AI(35) adpSheetAt
+// AJ(36) adpCsvAt
+// -- /de112c additions --
+// AS(45) tshirtSize
 
 function doPost(e) {
   try {
@@ -50,6 +59,13 @@ function doPost(e) {
         data.ecRelationship || '',  // W  emergency contact relationship
         data.ecPhone        || '',  // X  emergency contact phone
         'new',                      // Y  overallStatus
+        data.gender         || '',  // Z(26)  gender
+        '', '', '', '', '',         // AA–AE(27–31)  employment (filled by admin)
+        '', '', '', '', '',         // AF–AJ(32–36)  export timestamps
+        '', '', '', '',             // AK–AN(37–40)  working papers + status
+        '', '', '',                 // AO–AQ(41–43)  lifecycle timestamps + reason
+        '',                         // AR(44)  driveFolderId
+        data.tshirtSize     || '',  // AS(45)  t-shirt size
       ]);
       return json({ status: 'ok', rowId: sheet.getLastRow() });
     }
@@ -63,7 +79,7 @@ function doPost(e) {
       const employees = rows.reduce((acc, row, i) => {
         // Skip header row (first cell is a non-date string like "submittedAt")
         if (i === 0 && row[0] && isNaN(new Date(row[0]).getTime())) return acc;
-        while (row.length < 27) row.push('');
+        while (row.length < 45) row.push('');
         const i9Complete = (row[11] || 'pending') === 'complete';
         acc.push({
           id:             i + 1,          // actual 1-based sheet row number
@@ -85,9 +101,32 @@ function doPost(e) {
           ecName:         row[21] || '',
           ecRelationship: row[22] || '',
           ecPhone:        row[23] || '',
-          overallStatus:        row[24] || 'new',
-          workingPapersStatus:  row[25] || '',
-          workingPapersFileId:  row[26] || '',
+          overallStatus:  row[24] || 'new',
+          // /de112b additions
+          gender:         row[25] || '',
+          tshirtSize:     row[44] || '',
+          payRate:        row[26] || '',
+          position:       row[27] || '',
+          location:       row[28] || '',
+          deptCode:       row[29] || '',
+          hireDate:       row[30] ? formatDate(row[30]) : '',
+          humanityCsvAt:  row[31] ? safeDate(row[31]) : '',
+          quCsvAt:        row[32] ? safeDate(row[32]) : '',
+          zignalCsvAt:    row[33] ? safeDate(row[33]) : '',
+          adpSheetAt:     row[34] ? safeDate(row[34]) : '',
+          adpCsvAt:       row[35] ? safeDate(row[35]) : '',
+          // /de112b: working papers (under-18)
+          workingPapersGivenAt:    row[36] ? safeDate(row[36]) : '',
+          workingPapersReturnedAt: row[37] ? safeDate(row[37]) : '',
+          workingPapersFileId:     row[38] || '',
+          // /de112b: lifecycle status
+          status:          row[39] || 'onboarding',
+          activatedAt:     row[40] ? safeDate(row[40]) : '',
+          inactiveAt:      row[41] ? safeDate(row[41]) : '',
+          inactiveReason:  row[42] || '',
+          // /de112b: explicit Drive folder ID (set during folder creation, or
+          // populated for legacy/imported employees pointing at a shared folder)
+          driveFolderId:   row[43] || '',
           i9s2: i9Complete ? {
             docTitle:     row[13] || '',
             docNumber:    row[14] || '',
@@ -241,6 +280,18 @@ function doPost(e) {
         'I-9 Doc Title', 'I-9 Doc Number', 'I-9 Issuer', 'I-9 Exp Date',
         'I-9 Verified Date', 'I-9 Verified By', 'I-9 File ID',
         'Start Date', 'EC Name', 'EC Relationship', 'EC Phone', 'Overall Status',
+        // /de112b additions
+        'Gender',                                // Z
+        'Pay Rate', 'Position', 'Location',      // AA–AC
+        'Dept Code', 'Hire Date (confirmed)',    // AD, AE
+        'Humanity CSV At', 'Qu CSV At',          // AF, AG
+        'Zygnal CSV At',                         // AH
+        'ADP Cheat Sheet At', 'ADP CSV At',      // AI, AJ
+        // /de112c additions (AK–AS are working papers, lifecycle, Drive folder, t-shirt)
+        'WP Given At', 'WP Returned At', 'WP File ID',  // AK, AL, AM
+        'Status', 'Activated At', 'Inactive At', 'Inactive Reason',  // AN, AO, AP, AQ
+        'Drive Folder ID',                       // AR
+        'T-Shirt Size',                          // AS
       ];
       // Only insert if row 1 is not already a header
       const first = sheet.getRange(1, 1).getValue();
@@ -253,82 +304,236 @@ function doPost(e) {
       return json({ status: 'ok' });
     }
 
-    // ── Get shared config from PropertiesService ──────────────────────────
-    if (data.action === 'getConfig') {
-      const props = PropertiesService.getScriptProperties();
-      return json({
-        businessName:  props.getProperty('businessName')  || '',
-        managerName:   props.getProperty('managerName')   || '',
-        managerPhone:  props.getProperty('managerPhone')  || '',
-        ein:           props.getProperty('ein')           || '',
-        address:       props.getProperty('address')       || '',
-        email:         props.getProperty('email')         || '',
-        state:         props.getProperty('state')         || 'DE',
-      });
-    }
-
-    // ── Save shared config to PropertiesService ───────────────────────────
-    if (data.action === 'setConfig') {
-      const props = PropertiesService.getScriptProperties();
-      ['businessName','managerName','managerPhone','ein','address','email','state'].forEach(k => {
-        if (data[k] !== undefined) props.setProperty(k, String(data[k]));
-      });
+    // ── /de112b: update employment details (pay rate, position, etc.) ─────
+    // Columns AA(27), AB(28), AC(29), AD(30), AE(31)
+    if (data.action === 'updateEmployment') {
+      const rowId = parseInt(data.rowId);
+      if (!rowId || rowId < 1) return json({ error: 'Invalid rowId' });
+      sheet.getRange(rowId, 27, 1, 5).setValues([[
+        data.payRate  || '',  // AA
+        data.position || '',  // AB
+        data.location || '',  // AC
+        data.deptCode || '',  // AD
+        data.hireDate || '',  // AE
+      ]]);
       return json({ status: 'ok' });
     }
 
-    // ── Upload working papers to Drive + mark sheet complete ─────────────────
+    // ── /de112b: stamp an export-download timestamp ───────────────────────
+    // Called by Flask right after serving an export. col is 1-based.
+    if (data.action === 'stampExport') {
+      const rowId = parseInt(data.rowId);
+      const col   = parseInt(data.col);
+      if (!rowId || rowId < 1) return json({ error: 'Invalid rowId' });
+      if (!col   || col   < 1) return json({ error: 'Invalid col' });
+      sheet.getRange(rowId, col).setValue(data.timestamp || new Date().toISOString());
+      return json({ status: 'ok' });
+    }
+
+    // ── /de112b: get the parent folder of a Drive file ────────────────────
+    // Used to find the employee's individual subfolder so CSV exports can be
+    // saved alongside their PDFs.
+    if (data.action === 'getFileParent') {
+      try {
+        const file = DriveApp.getFileById(data.fileId);
+        const parents = file.getParents();
+        if (!parents.hasNext()) return json({ error: 'No parent folder' });
+        const parent = parents.next();
+        return json({ folderId: parent.getId(), url: parent.getUrl() });
+      } catch (err) {
+        return json({ error: 'File not found: ' + err.message });
+      }
+    }
+
+    // ── /de112b: get an employee's Drive folder URL by row ID ─────────────
+    // Tries the cached driveFolderId column (AR/44) first; falls back to
+    // deriving from the I-9 file's parent (column T/20). Used by the admin
+    // "Open Drive folder" button.
+    if (data.action === 'getEmployeeFolderUrl') {
+      const rowId = parseInt(data.rowId);
+      if (!rowId || rowId < 1) return json({ error: 'Invalid rowId' });
+      try {
+        const lastCol = sheet.getLastColumn();
+        const numCols = Math.max(44, lastCol);
+        const row = sheet.getRange(rowId, 1, 1, numCols).getValues()[0];
+        // Pad in case sheet has fewer than 44 columns
+        while (row.length < 44) row.push('');
+        // Try cached folder ID first (AR / index 43)
+        const cachedFolderId = (row[43] || '').toString().trim();
+        if (cachedFolderId) {
+          try {
+            const folder = DriveApp.getFolderById(cachedFolderId);
+            return json({ folderId: cachedFolderId, url: folder.getUrl(), source: 'cached' });
+          } catch (err) {
+            // Fall through to I-9 parent derivation
+          }
+        }
+        // Fallback: derive from I-9 file's parent (T / index 19)
+        const i9FileId = (row[19] || '').toString().trim();
+        if (!i9FileId) return json({ error: 'No Drive folder for this employee (no folder ID cached, no I-9 file on record)' });
+        const file = DriveApp.getFileById(i9FileId);
+        const parents = file.getParents();
+        if (!parents.hasNext()) return json({ error: 'I-9 file has no parent folder' });
+        const parent = parents.next();
+        return json({ folderId: parent.getId(), url: parent.getUrl(), source: 'derived' });
+      } catch (err) {
+        return json({ error: 'Could not resolve folder: ' + err.message });
+      }
+    }
+
+    // ── /de112b: set working papers given/returned timestamps ─────────────
+    // Toggle a boolean field for a row. If `value` is true (or omitted), writes
+    // current ISO timestamp; if false, clears the cell.
+    //   field='given'    → column AK (37)
+    //   field='returned' → column AL (38)
+    if (data.action === 'setWorkingPapers') {
+      const rowId = parseInt(data.rowId);
+      if (!rowId || rowId < 1) return json({ error: 'Invalid rowId' });
+      const colByField = { given: 37, returned: 38 };
+      const col = colByField[data.field];
+      if (!col) return json({ error: 'Invalid field — must be given or returned' });
+      const stamp = (data.value === false) ? '' : (data.timestamp || new Date().toISOString());
+      sheet.getRange(rowId, col).setValue(stamp);
+      return json({ status: 'ok' });
+    }
+
+    // ── /de112b: upload a working papers photo to the employee's Drive folder ──
+    // Takes base64 file data, finds the employee's Drive folder (parent of their
+    // I-9 file), uploads the photo there, writes the new file's ID to column AM.
+    // Also stamps the "returned" timestamp (column AL) since the photo only
+    // arrives once the papers have come back.
     if (data.action === 'uploadWorkingPapers') {
       const rowId = parseInt(data.rowId);
       if (!rowId || rowId < 1) return json({ error: 'Invalid rowId' });
-      let fileId = '';
-      if (data.fileData && data.folderId) {
-        const folder = DriveApp.getFolderById(data.folderId);
-        const bytes  = Utilities.base64Decode(data.fileData);
-        const blob   = Utilities.newBlob(bytes, data.mimeType || 'image/jpeg', data.filename || 'working_papers');
-        const file   = folder.createFile(blob);
-        file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-        fileId = file.getId();
+      // Find employee's folder via their I-9 file (column T = 20)
+      const i9FileId = sheet.getRange(rowId, 20).getValue();
+      if (!i9FileId) return json({ error: 'No I-9 file on record — cannot find employee folder' });
+      let folder;
+      try {
+        const i9File = DriveApp.getFileById(i9FileId);
+        const parents = i9File.getParents();
+        if (!parents.hasNext()) return json({ error: 'I-9 file has no parent folder' });
+        folder = parents.next();
+      } catch (err) {
+        return json({ error: 'Could not access I-9 folder: ' + err.message });
       }
-      sheet.getRange(rowId, 26).setValue('complete'); // Z — workingPapersStatus
-      sheet.getRange(rowId, 27).setValue(fileId);     // AA — workingPapersFileId
-      return json({ status: 'ok', fileId });
+      // Upload the photo
+      const bytes = Utilities.base64Decode(data.fileData);
+      const blob  = Utilities.newBlob(
+        bytes,
+        data.mimeType || 'image/jpeg',
+        data.filename || ('working-papers-' + new Date().toISOString().slice(0,10) + '.jpg')
+      );
+      const file = folder.createFile(blob);
+      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      // Write file ID to column AM (39) and timestamp to AL (38)
+      sheet.getRange(rowId, 39).setValue(file.getId());
+      sheet.getRange(rowId, 38).setValue(new Date().toISOString());
+      return json({ status: 'ok', fileId: file.getId(), url: file.getUrl() });
     }
 
-    // ── Send welcome email via Gmail ─────────────────────────────────────────
-    if (data.action === 'sendWelcomeEmail') {
-      const handbookFile = DriveApp.getFileById('1MkAHFaMDj3Ejkjid73nvNSpfxcq3eo2s');
-      const attachment   = handbookFile.getBlob().setName('Auntie_Annes_Employee_Handbook.pdf');
-      const body = `Hi ${data.firstName},
-
-We are all really excited to welcome you to our team at Auntie Anne's Christiana Mall! We believe that you will be a wonderful addition to our team! Your starting pay rate will be ${data.payRate}. We are paid bi-weekly on Fridays via Direct Deposit. With your start date being the week of ${data.startWeek} you will receive your first paycheck on ${data.firstPaycheck} and then every other Friday after that.
-
-Joining our team at Auntie Anne's is a 5-step process, so let's get started!
-
-Step 1: Fill out your onboarding forms at the link you received.
-Step 2: Bring your ID documents on your first day for I-9 verification.
-Step 3: Set up direct deposit with your bank info.
-Step 4: Review the employee handbook attached to this email.
-Step 5: Show up ready to make some pretzels! 🥨
-
-If you have any questions before your first day, reply to this email or call/text ${data.senderName} at ${data.senderPhone}.
-
-See you soon!
-${data.senderName}
-Auntie Anne's Christiana Mall`;
-
-      const mailOpts = {
-        attachments: [attachment],
-        replyTo: data.replyTo || data.toEmail,
-        name: data.senderName || "Auntie Anne's",
-      };
-      if (data.cc) mailOpts.cc = data.cc;
-      GmailApp.sendEmail(
-        data.toEmail,
-        `Welcome to the Team, ${data.firstName}! 🥨`,
-        body,
-        mailOpts
-      );
+    // ── /de112b: set lifecycle status ──────────────────────────────────
+    // Columns AN(40)=status, AO(41)=activatedAt, AP(42)=inactiveAt, AQ(43)=inactiveReason
+    if (data.action === 'setStatus') {
+      const rowId = parseInt(data.rowId);
+      if (!rowId || rowId < 1) return json({ error: 'Invalid rowId' });
+      const status = data.status;
+      if (!['onboarding','active','inactive'].includes(status)) {
+        return json({ error: 'Invalid status' });
+      }
+      const now = new Date().toISOString();
+      sheet.getRange(rowId, 40).setValue(status);
+      if (status === 'active') {
+        // Stamp activatedAt if not already set; clear inactive fields
+        const existing = sheet.getRange(rowId, 41).getValue();
+        if (!existing) sheet.getRange(rowId, 41).setValue(now);
+        sheet.getRange(rowId, 42).setValue('');
+        sheet.getRange(rowId, 43).setValue('');
+      } else if (status === 'inactive') {
+        sheet.getRange(rowId, 42).setValue(now);
+        if (data.reason) sheet.getRange(rowId, 43).setValue(String(data.reason).substring(0, 500));
+      } else if (status === 'onboarding') {
+        // Reactivation case: clear activated/inactive stamps so they re-run the flow
+        sheet.getRange(rowId, 41).setValue('');
+        sheet.getRange(rowId, 42).setValue('');
+        sheet.getRange(rowId, 43).setValue('');
+      }
       return json({ status: 'ok' });
+    }
+
+
+    // ── /de112b: write Drive folder ID into AR (44) for a given row ───────
+    // Used by the import script to point legacy/imported employees at a
+    // shared "Pre-Middleman" folder, and by the backend after createFolder
+    // to cache the new folder ID so we don't have to derive it from the I-9
+    // file's parent on every Drive-folder click.
+    if (data.action === 'setDriveFolderId') {
+      const rowId = parseInt(data.rowId);
+      if (!rowId || rowId < 1) return json({ error: 'Invalid rowId' });
+      if (!data.folderId) return json({ error: 'folderId required' });
+      sheet.getRange(rowId, 44).setValue(String(data.folderId));
+      return json({ status: 'ok' });
+    }
+
+
+    // Run this once from the GAS editor (or webhook) to insert fake rows so
+    // you can test the new Employment Details + Export flow in the admin.
+    // Both employees have fully-populated I-9 Section 1 doc details and
+    // submitted form data. Neither has employment details filled (that's
+    // the point — you set them from the admin to test the flow).
+    //
+    // To run from the editor: select `doPost` is wrong — instead add a
+    // temporary function:  function seed() { doPost({postData:{contents:
+    //   JSON.stringify({secret:GAS_SECRET, action:'seedTestEmployees'})}}); }
+    // then run seed() once. Remove when done.
+    if (data.action === 'seedTestEmployees') {
+      const now = new Date().toISOString();
+      const rows = [
+        [
+          now, 'Marcus', 'Johnson', 'marcus.johnson+test@example.com',
+          '(302) 555-0101', '***-**-1234', '2000-01-15',
+          '123 Main Street', 'Wilmington', 'DE', '19801',
+          'pending', '',  // i9Status, driveUrl (no real Drive folder)
+          '', '', '', '', '', '',  // i9 section 2 fields
+          '', '2025-01-20',  // i9FileId, startDate
+          'Jane Johnson', 'Parent', '(302) 555-0102',  // emergency contact
+          'new',  // overallStatus
+          'Male',  // gender
+          '', '', '', '', '',  // pay rate, position, location, dept, hire date (blank intentionally)
+          '', '', '', '', '',  // export timestamps (blank)
+        ],
+        [
+          now, 'Sofia', 'Martinez', 'sofia.martinez+test@example.com',
+          '(302) 555-0201', '***-**-5678', '2003-07-22',
+          '456 Elm Ave', 'Newark', 'DE', '19711',
+          'pending', '',
+          '', '', '', '', '', '',
+          '', '2025-02-01',
+          'Rosa Martinez', 'Parent', '(302) 555-0202',
+          'new',
+          'Female',
+          '', '', '', '', '',
+          '', '', '', '', '',
+        ],
+      ];
+      rows.forEach(r => sheet.appendRow(r));
+      return json({ status: 'ok', inserted: rows.length });
+    }
+
+    // ── /de112b: remove all test employees (rows where email ends with '+test@example.com') ──
+    // Clean up after admin preview testing.
+    if (data.action === 'removeTestEmployees') {
+      const all = sheet.getDataRange().getValues();
+      let removed = 0;
+      // Iterate from bottom to top so row indexes don't shift as we delete
+      for (let i = all.length - 1; i > 0; i--) {
+        const email = String(all[i][3] || '');
+        if (email.includes('+test@example.com')) {
+          sheet.deleteRow(i + 1);
+          removed++;
+        }
+      }
+      return json({ status: 'ok', removed: removed });
     }
 
     return json({ error: 'Unknown action' });
@@ -356,4 +561,37 @@ function formatDate(val) {
   } catch (e) {
     return String(val);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Editor-runnable helpers for /de112b admin testing.
+// From the Apps Script editor, select the function name from the toolbar
+// dropdown and click Run. Uses the GAS_SECRET to call doPost() directly —
+// no webhook round-trip needed.
+// ─────────────────────────────────────────────────────────────────────────
+
+function runSeedTestEmployees() {
+  const fakeEvent = {
+    postData: {
+      contents: JSON.stringify({
+        secret: GAS_SECRET,
+        action: 'seedTestEmployees',
+      }),
+    },
+  };
+  const result = doPost(fakeEvent);
+  Logger.log('seedTestEmployees result: ' + result.getContent());
+}
+
+function runRemoveTestEmployees() {
+  const fakeEvent = {
+    postData: {
+      contents: JSON.stringify({
+        secret: GAS_SECRET,
+        action: 'removeTestEmployees',
+      }),
+    },
+  };
+  const result = doPost(fakeEvent);
+  Logger.log('removeTestEmployees result: ' + result.getContent());
 }

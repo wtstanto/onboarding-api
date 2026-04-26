@@ -152,6 +152,7 @@ def log_to_sheet(data, zip_drive_url="", i9_file_id=""):
         "ecName":         data.get("ecName",          ""),
         "ecRelationship": data.get("ecRelationship",  ""),
         "ecPhone":        data.get("ecPhone",         ""),
+        "tshirtSize":     data.get("tshirtSize",      ""),
     })
     return result.get("rowId") if result else None
 
@@ -809,6 +810,7 @@ import html as _html
 # Sheet indexes for the new columns (0-based, matching the row[] arrays from
 # GAS getRow). Column letters in comments. If the sheet ever shifts these must
 # update here AND in google-apps-script.js — keep in sync.
+_COL_TSHIRT_SIZE      = 44  # AS
 _COL_GENDER           = 25  # Z
 _COL_PAY_RATE         = 26  # AA
 _COL_POSITION         = 27  # AB
@@ -884,6 +886,7 @@ def _row_to_employee(row):
         "ecPhone":        g(23),
         "overallStatus":  g(24),
         "gender":         g(_COL_GENDER),
+        "tshirtSize":     g(_COL_TSHIRT_SIZE),
         "payRate":        g(_COL_PAY_RATE),
         "position":       g(_COL_POSITION),
         "location":       g(_COL_LOCATION),
