@@ -556,23 +556,32 @@ def fill():
             zf.writestr(f"{name}_I9.pdf",          i9_bytes)
         zip_bytes = zip_buf.getvalue()
 
-        # Create per-employee subfolder in Drive
-        emp_folder_id, emp_folder_url = create_employee_folder(f"{first} {last}")
-        target_folder = emp_folder_id or DRIVE_FOLDER_ID
+        # Drive uploads + Sheet logging run in a background thread so the
+        # employee gets their ZIP (and sees the success screen) immediately.
+        # GAS cold starts can take 60s+ — no reason to make the employee wait.
+        import threading
+        def _background(data, first, last, name, w4_bytes, de_w4_bytes, i9_bytes):
+            try:
+                emp_folder_id, emp_folder_url = create_employee_folder(f"{first} {last}")
+                target_folder = emp_folder_id or DRIVE_FOLDER_ID
+                i9_file_id, _ = upload_file_to_drive(
+                    f"{name}_I9.pdf", i9_bytes, "application/pdf", target_folder
+                )
+                upload_file_to_drive(
+                    f"{name}_W4_Federal.pdf", w4_bytes, "application/pdf", target_folder
+                )
+                upload_file_to_drive(
+                    f"{name}_W4_Delaware.pdf", de_w4_bytes, "application/pdf", target_folder
+                )
+                log_to_sheet(data, zip_drive_url=emp_folder_url or "", i9_file_id=i9_file_id or "")
+            except Exception as exc:
+                print(f"[background /fill] Drive/Sheet error: {exc}")
 
-        # Upload individual PDFs into the employee's folder
-        i9_file_id, _ = upload_file_to_drive(
-            f"{name}_I9.pdf", i9_bytes, "application/pdf", target_folder
-        )
-        upload_file_to_drive(
-            f"{name}_W4_Federal.pdf", w4_bytes, "application/pdf", target_folder
-        )
-        upload_file_to_drive(
-            f"{name}_W4_Delaware.pdf", de_w4_bytes, "application/pdf", target_folder
-        )
-
-        # Log to Sheet — driveUrl points to the employee's folder
-        log_to_sheet(data, zip_drive_url=emp_folder_url or "", i9_file_id=i9_file_id or "")
+        threading.Thread(
+            target=_background,
+            args=(data, first, last, name, w4_bytes, de_w4_bytes, i9_bytes),
+            daemon=True,
+        ).start()
 
         return send_file(
             io.BytesIO(zip_bytes),
