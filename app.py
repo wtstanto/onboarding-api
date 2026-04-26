@@ -730,41 +730,55 @@ def debug():
 
 
 WELCOME_EMAIL_TEMPLATE = """\
-Hi {firstName},
+{firstName},
 
 We are all really excited to welcome you to our team at Auntie Anne's Christiana Mall! We believe that you will be a wonderful addition to our team! Your starting pay rate will be {payRate}. We are paid bi-weekly on Fridays via Direct Deposit. With your start date being the week of {startWeek} you will receive your first paycheck on {firstPaycheck} and then every other Friday after that.
 
 Joining our team at Auntie Anne's is a 5-step process, so let's get started!
 
+
 STEP 1 - REVIEW THE EMPLOYEE HANDBOOK
-Attached to this email is the employee handbook. When you have a few minutes, take some time to read through it. You are expected to read the entire document, but please pay special attention to Section 6, "Employee Conduct," and Section 7, "Timekeeping and Payroll," so you are familiar with these policies. If you have any questions about what you read in the handbook, please reach out to me ({senderName} - {senderPhone}).
+
+Attached to this email is the employee handbook. When you have a few minutes, take some time to read through it.
+
+You are expected to read the entire document, but please pay special attention to Section 6, "Employee Conduct," and Section 7, "Timekeeping and Payroll," so you are familiar with these policies.
+
+If you have any questions about what you read in the handbook, please reach out to me ({senderName} at {senderPhone}).
+
 
 STEP 2 - FILL OUT YOUR NEW EMPLOYEE PAPERWORK ONLINE
-If you haven't already, you should soon be receiving a link to fill out all of the new hire paperwork online. This will be done on your mobile device or any other computer. You will be asked if you have read the employee handbook, so make sure you complete Step 1 before completing Step 2. If you have any questions while filling out new employee paperwork, please reach out to myself ({senderName}).
+
+Please click the link below to complete our onboarding process.
+
+{onboardLink}
+
+If you have any questions while filling out new employee paperwork, please reach out.
+
 
 STEP 3 - SET UP YOUR ACCOUNT ON ADP IN THE FIRST WEEK
-In the next week or so you will receive an email from ADP, our payroll processor. Please follow the instructions in the email to setup your ADP account so that you can confirm your payroll settings and view paystubs. You won't get this email until we set you up in ADP, so please give us 7-10 days to get you registered. In the meantime, you can move on to Step 4.
+
+Within a week from completing your paperwork you will receive an email from ADP, our payroll processor. Please follow the instructions in the email to setup your ADP account so that you can confirm your payroll settings and view paystubs.
+
 
 STEP 4 - GET READY FOR YOUR FIRST DAY
-Here is what you'll need:
 
-  • Have all of your new hire paperwork completed before you come in.
-  • Bring in the forms of identification so we can fill out your I-9 form.
-  • If you are under the age of 18, bring in your working papers.
-  • Come prepared to work on the floor, with jeans or tan/black khaki pants or shorts and comfortable closed toe shoes. Long hair must be pulled back.
-  • We will provide you with an Auntie Anne's t-shirt and a hat or visor.
-  • Have your log in code. I will get you set up on our register system and send you a text with the code you'll need to clock in/out and log in on the registers.
+Here is what you'll need for your first day:
+
+  - Have all of your new hire paperwork completed (Step 2 of this email)
+  - Bring in the forms of identification you specified on your I-9 form so we can verify.
+  - If you are under the age of 18, bring in your working papers.
+  - Come prepared to work on the floor, with jeans or tan/black khaki pants or shorts and also comfortable closed toe shoes. Long hair must be pulled back. (We will provide you with an Auntie Anne's t-shirt and a hat or visor.)
+
 
 STEP 5 - DOWNLOAD OUR SCHEDULING APP
-Once you have completed your initial 4-day training you will get login information for Humanity, our scheduling service. You can log in here: https://auntieannes105112.humanity.com/app/dashboard/
-In the meantime, you can download the free Humanity app on any smartphone or tablet — just search for "Humanity - employee scheduling" in your app store.
+
+Once you have completed your initial 4-day training you will get login information for Humanity, our scheduling service. Once you have that info you can login here:
+
+https://auntieannes105112.humanity.com/app/dashboard/
+
+In the meantime, you can download the free Humanity app on any smartphone or tablet. Just search for "Humanity - employee scheduling" in your app store. You will be able to log in once we give you your login info after your 4-day training.
 
 We are looking forward to working with you and seeing you achieve great things! Thanks for joining the Auntie Anne's Christiana Mall family!
-
-Best regards,
-{senderName}
-Store Manager, Auntie Anne's Christiana Mall
-{senderPhone}
 """
 
 
@@ -804,6 +818,7 @@ def send_welcome():
         firstPaycheck=first_paycheck,
         senderName=sender_name,
         senderPhone=sender_phone,
+        onboardLink=onboard_link or "https://previews.gomiddleman.com/de112c/",
     )
 
     subject = f"Welcome to the Auntie Anne's Christiana Mall Team, {first_name}!"
