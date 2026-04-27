@@ -181,6 +181,18 @@ function doPost(e) {
       return json({ status: 'ok' });
     }
 
+    // ── Send welcome email via MailApp ────────────────────────────────────
+    if (data.action === 'sendEmail') {
+      MailApp.sendEmail({
+        to:      data.to,
+        subject: data.subject,
+        body:    data.body,
+        name:    data.fromName || 'Auntie Anne\'s',
+        replyTo: data.replyTo  || '',
+      });
+      return json({ status: 'ok' });
+    }
+
     // ── Create a subfolder in Drive ──────────────────────────────────────
     if (data.action === 'createFolder') {
       const parent = DriveApp.getFolderById(data.parentFolderId);

@@ -798,9 +798,6 @@ def send_welcome():
     if missing:
         return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
 
-    if not GMAIL_USER or not GMAIL_APP_PASS:
-        return jsonify({"error": "Email not configured — set GMAIL_USER and GMAIL_APP_PASSWORD in Railway"}), 500
-
     first_name    = data["firstName"]
     last_name     = data.get("lastName", "")
     to_email      = data["email"]
@@ -825,34 +822,19 @@ def send_welcome():
 
     subject = f"Welcome to the Auntie Anne's Christiana Mall Team, {first_name}!"
 
-    msg = MIMEMultipart()
-    msg["From"]     = f"{sender_name} <{GMAIL_USER}>"
-    msg["To"]       = to_email
-    msg["Reply-To"] = f"{sender_name} <{sender_email}>"
-    msg["Subject"]  = subject
-    msg.attach(MIMEText(body, "plain"))
+    # Send via Google Apps Script MailApp — avoids SMTP port blocks on Railway
+    gas_result = gas_post({
+        "action":   "sendEmail",
+        "to":       to_email,
+        "subject":  subject,
+        "body":     body,
+        "fromName": sender_name,
+        "replyTo":  sender_email,
+    }, timeout=30)
 
-    # Attach handbook PDF if it exists
-    if os.path.exists(HANDBOOK_PATH):
-        with open(HANDBOOK_PATH, "rb") as f:
-            part = MIMEBase("application", "octet-stream")
-            part.set_payload(f.read())
-        encoders.encode_base64(part)
-        part.add_header("Content-Disposition", "attachment", filename="Auntie_Annes_Employee_Handbook.pdf")
-        msg.attach(part)
-
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
-            server.login(GMAIL_USER, GMAIL_APP_PASS)
-            server.sendmail(GMAIL_USER, to_email, msg.as_string())
-    except smtplib.SMTPAuthenticationError:
-        return jsonify({"error": "Gmail authentication failed — check GMAIL_USER and GMAIL_APP_PASSWORD in Railway env vars"}), 500
-    except smtplib.SMTPException as exc:
-        return jsonify({"error": f"SMTP error: {exc}"}), 500
-    except OSError as exc:
-        return jsonify({"error": f"Connection to Gmail failed (timeout or network): {exc}"}), 500
-    except Exception as exc:
-        return jsonify({"error": f"Unexpected error sending email: {exc}"}), 500
+    if not gas_result or gas_result.get("status") != "ok":
+        err = gas_result.get("error", "Unknown error") if gas_result else "No response from mail server"
+        return jsonify({"error": f"Failed to send email: {err}"}), 500
 
     # Optional SMS via Twilio
     sms_status = None
