@@ -738,9 +738,7 @@ Joining our team at Auntie Anne's is a 5-step process, so let's get started!
 
 STEP 1 - REVIEW THE EMPLOYEE HANDBOOK
 
-Attached to this email is the employee handbook. When you have a few minutes, take some time to read through it.
-
-You are expected to read the entire document, but please pay special attention to Section 6, "Employee Conduct," and Section 7, "Timekeeping and Payroll," so you are familiar with these policies.
+As part of Step 2 below, you will be asked to review and acknowledge the employee handbook during the online onboarding process. Please read through the entire document, paying special attention to Section 6, "Employee Conduct," and Section 7, "Timekeeping and Payroll," so you are familiar with these policies.
 
 If you have any questions about what you read in the handbook, please reach out to me ({senderName} at {senderPhone}).
 
@@ -807,9 +805,15 @@ def send_welcome():
     sender_phone  = data.get("senderPhone", "")
     sender_email  = data["senderEmail"]
 
+    # Format pay rate: "15" → "$15.00/hr", "15.50" → "$15.50/hr"
+    try:
+        pay_rate_fmt = f"${float(pay_rate):.2f}/hr"
+    except Exception:
+        pay_rate_fmt = pay_rate
+
     body = WELCOME_EMAIL_TEMPLATE.format(
         firstName=first_name,
-        payRate=pay_rate,
+        payRate=pay_rate_fmt,
         startWeek=start_week,
         firstPaycheck=first_paycheck,
         senderName=sender_name,
