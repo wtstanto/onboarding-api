@@ -733,31 +733,26 @@ WELCOME_EMAIL_TEMPLATE = """\
 
 We are all really excited to welcome you to our team at Auntie Anne's Christiana Mall! We believe that you will be a wonderful addition to our team! Your starting pay rate will be {payRate}. We are paid bi-weekly on Fridays via Direct Deposit. With your start date being the week of {startWeek} you will receive your first paycheck on {firstPaycheck} and then every other Friday after that.
 
-Joining our team at Auntie Anne's is a 5-step process, so let's get started!
+Joining our team at Auntie Anne's is a 4-step process, so let's get started!
 
 
-STEP 1 - REVIEW THE EMPLOYEE HANDBOOK
+STEP 1 - FILL OUT YOUR NEW EMPLOYEE PAPERWORK ONLINE
 
-As part of Step 2 below, you will be asked to review and acknowledge the employee handbook during the online onboarding process. Please read through the entire document, paying special attention to Section 6, "Employee Conduct," and Section 7, "Timekeeping and Payroll," so you are familiar with these policies.
-
-If you have any questions about what you read in the handbook, please reach out to me ({senderName} at {senderPhone}).
-
-
-STEP 2 - FILL OUT YOUR NEW EMPLOYEE PAPERWORK ONLINE
-
-Please click the link below to complete our onboarding process.
+Please click the link below to complete our onboarding process, which includes collecting your information and reviewing our employee handbook:
 
 {onboardLink}
 
-If you have any questions while filling out new employee paperwork, please reach out.
+The handbook covers everything you need to know before your first day. Please pay special attention to Section 6, "Employee Conduct," and Section 7, "Timekeeping and Payroll."
+
+If you have any questions, please reach out to me ({senderName} at {senderPhone}).
 
 
-STEP 3 - SET UP YOUR ACCOUNT ON ADP IN THE FIRST WEEK
+STEP 2 - SET UP YOUR ACCOUNT ON ADP IN THE FIRST WEEK
 
 Within a week from completing your paperwork you will receive an email from ADP, our payroll processor. Please follow the instructions in the email to setup your ADP account so that you can confirm your payroll settings and view paystubs.
 
 
-STEP 4 - GET READY FOR YOUR FIRST DAY
+STEP 3 - GET READY FOR YOUR FIRST DAY
 
 Here is what you'll need for your first day:
 
@@ -767,7 +762,7 @@ Here is what you'll need for your first day:
   - Come prepared to work on the floor, with jeans or tan/black khaki pants or shorts and also comfortable closed toe shoes. Long hair must be pulled back. (We will provide you with an Auntie Anne's t-shirt and a hat or visor.)
 
 
-STEP 5 - DOWNLOAD OUR SCHEDULING APP
+STEP 4 - DOWNLOAD OUR SCHEDULING APP
 
 Once you have completed your initial 4-day training you will get login information for Humanity, our scheduling service. Once you have that info you can login here:
 
