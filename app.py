@@ -840,13 +840,17 @@ def send_welcome():
         msg.attach(part)
 
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
             server.login(GMAIL_USER, GMAIL_APP_PASS)
             server.sendmail(GMAIL_USER, to_email, msg.as_string())
     except smtplib.SMTPAuthenticationError:
-        return jsonify({"error": "Gmail authentication failed — check GMAIL_USER and GMAIL_APP_PASSWORD"}), 500
+        return jsonify({"error": "Gmail authentication failed — check GMAIL_USER and GMAIL_APP_PASSWORD in Railway env vars"}), 500
+    except smtplib.SMTPException as exc:
+        return jsonify({"error": f"SMTP error: {exc}"}), 500
+    except OSError as exc:
+        return jsonify({"error": f"Connection to Gmail failed (timeout or network): {exc}"}), 500
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        return jsonify({"error": f"Unexpected error sending email: {exc}"}), 500
 
     # Optional SMS via Twilio
     sms_status = None
