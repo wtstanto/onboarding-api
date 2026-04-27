@@ -66,6 +66,7 @@ function doPost(e) {
         '', '', '',                 // AO–AQ(41–43)  lifecycle timestamps + reason
         '',                         // AR(44)  driveFolderId
         data.tshirtSize     || '',  // AS(45)  t-shirt size
+        data.i9s1docs       || '',  // AT(46)  I-9 Section 1 doc data (JSON)
       ]);
       return json({ status: 'ok', rowId: sheet.getLastRow() });
     }
@@ -79,7 +80,7 @@ function doPost(e) {
       const employees = rows.reduce((acc, row, i) => {
         // Skip header row (first cell is a non-date string like "submittedAt")
         if (i === 0 && row[0] && isNaN(new Date(row[0]).getTime())) return acc;
-        while (row.length < 45) row.push('');
+        while (row.length < 46) row.push('');
         const i9Complete = (row[11] || 'pending') === 'complete';
         acc.push({
           id:             i + 1,          // actual 1-based sheet row number
@@ -105,6 +106,7 @@ function doPost(e) {
           // /de112b additions
           gender:         row[25] || '',
           tshirtSize:     row[44] || '',
+          i9s1docs:       row[45] ? (() => { try { return JSON.parse(row[45]); } catch(e) { return null; } })() : null,
           payRate:        row[26] || '',
           position:       row[27] || '',
           location:       row[28] || '',

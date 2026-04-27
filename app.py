@@ -10,6 +10,7 @@ POST /welcome                 → send welcome email with handbook to new hire (
 
 import os
 import io
+import json
 import base64
 import zipfile
 import smtplib
@@ -181,6 +182,7 @@ def log_to_sheet(data, zip_drive_url="", i9_file_id="", gas_url=None):
         "ecPhone":        data.get("ecPhone",         ""),
         "gender":         data.get("gender",          ""),
         "tshirtSize":     data.get("tshirtSize",      ""),
+        "i9s1docs":       json.dumps(data.get("i9s1docs") or {}),
     }, timeout=90, gas_url=gas_url)
     return result.get("rowId") if result else None
 
