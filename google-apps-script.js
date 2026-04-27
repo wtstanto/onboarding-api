@@ -186,6 +186,9 @@ function doPost(e) {
       const parent = DriveApp.getFolderById(data.parentFolderId);
       const folder = parent.createFolder(data.folderName);
       folder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      // Inherit editors and viewers from parent folder
+      parent.getEditors().forEach(u => folder.addEditor(u));
+      parent.getViewers().forEach(u => folder.addViewer(u));
       return json({ folderId: folder.getId(), url: folder.getUrl() });
     }
 
