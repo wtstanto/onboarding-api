@@ -13,11 +13,6 @@ import io
 import json
 import base64
 import zipfile
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
 from datetime import date, datetime
 
 import requests as http_requests
@@ -53,6 +48,8 @@ TWILIO_ACCOUNT_SID     = os.environ.get("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN      = os.environ.get("TWILIO_AUTH_TOKEN", "")
 TWILIO_FROM_NUMBER     = os.environ.get("TWILIO_FROM_NUMBER", "")
 TWILIO_MESSAGING_SID   = os.environ.get("TWILIO_MESSAGING_SERVICE_SID", "")
+RESEND_API_KEY         = os.environ.get("RESEND_API_KEY", "")
+RESEND_FROM_EMAIL      = os.environ.get("RESEND_FROM_EMAIL", "onboarding@de112.com")
 
 
 def check_api_key(req):
@@ -822,19 +819,31 @@ def send_welcome():
 
     subject = f"Welcome to the Auntie Anne's Christiana Mall Team, {first_name}!"
 
-    # Send via Google Apps Script MailApp — avoids SMTP port blocks on Railway
-    gas_result = gas_post({
-        "action":   "sendEmail",
-        "to":       to_email,
-        "subject":  subject,
-        "body":     body,
-        "fromName": sender_name,
-        "replyTo":  sender_email,
-    }, timeout=30)
+    # Send via Resend HTTPS API — no SMTP ports, no Google OAuth issues
+    if not RESEND_API_KEY:
+        return jsonify({"error": "Email not configured — set RESEND_API_KEY in Railway"}), 500
 
-    if not gas_result or gas_result.get("status") != "ok":
-        err = gas_result.get("error", "Unknown error") if gas_result else "No response from mail server"
-        return jsonify({"error": f"Failed to send email: {err}"}), 500
+    try:
+        resend_resp = http_requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from":     f"{sender_name} <{RESEND_FROM_EMAIL}>",
+                "to":       [to_email],
+                "reply_to": sender_email,
+                "subject":  subject,
+                "text":     body,
+            },
+            timeout=10,
+        )
+        if resend_resp.status_code not in (200, 201):
+            err = resend_resp.json().get("message", resend_resp.text)
+            return jsonify({"error": f"Failed to send email: {err}"}), 500
+    except Exception as exc:
+        return jsonify({"error": f"Failed to send email: {exc}"}), 500
 
     # Optional SMS via Twilio
     sms_status = None
