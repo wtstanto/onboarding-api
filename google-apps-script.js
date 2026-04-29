@@ -67,6 +67,7 @@ function doPost(e) {
         '',                         // AR(44)  driveFolderId
         data.tshirtSize     || '',  // AS(45)  t-shirt size
         data.i9s1docs       || '',  // AT(46)  I-9 Section 1 doc data (JSON)
+        data.testEntry ? 'TRUE' : '',  // AU(47)  test/demo submission flag
       ]);
       return json({ status: 'ok', rowId: sheet.getLastRow() });
     }
@@ -80,7 +81,7 @@ function doPost(e) {
       const employees = rows.reduce((acc, row, i) => {
         // Skip header row (first cell is a non-date string like "submittedAt")
         if (i === 0 && row[0] && isNaN(new Date(row[0]).getTime())) return acc;
-        while (row.length < 46) row.push('');
+        while (row.length < 47) row.push('');
         const i9Complete = (row[11] || 'pending') === 'complete';
         acc.push({
           id:             i + 1,          // actual 1-based sheet row number
@@ -107,6 +108,7 @@ function doPost(e) {
           gender:         row[25] || '',
           tshirtSize:     row[44] || '',
           i9s1docs:       row[45] ? (() => { try { return JSON.parse(row[45]); } catch(e) { return null; } })() : null,
+          testEntry:      row[46] === 'TRUE' || row[46] === true,
           payRate:        row[26] || '',
           position:       row[27] || '',
           location:       row[28] || '',
@@ -551,6 +553,18 @@ function doPost(e) {
         }
       }
       return json({ status: 'ok', removed: removed });
+    }
+
+    // ── Delete a single test/demo row ────────────────────────────────────
+    if (data.action === 'deleteRow') {
+      const rowId = parseInt(data.rowId);
+      if (!rowId || rowId < 2) return json({ error: 'Invalid rowId' });
+      // Safety check: only allow deletion of rows flagged as testEntry
+      const lastCol = Math.max(sheet.getLastColumn(), 47);
+      const row = sheet.getRange(rowId, 1, 1, lastCol).getValues()[0];
+      if (row[46] !== 'TRUE') return json({ error: 'Row is not a test entry — cannot delete' });
+      sheet.deleteRow(rowId);
+      return json({ status: 'ok' });
     }
 
     return json({ error: 'Unknown action' });

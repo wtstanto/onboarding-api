@@ -180,6 +180,7 @@ def log_to_sheet(data, zip_drive_url="", i9_file_id="", gas_url=None):
         "gender":         data.get("gender",          ""),
         "tshirtSize":     data.get("tshirtSize",      ""),
         "i9s1docs":       json.dumps(data.get("i9s1docs") or {}),
+        "testEntry":      bool(data.get("testEntry")),
     }, timeout=90, gas_url=gas_url)
     return result.get("rowId") if result else None
 
@@ -1388,3 +1389,19 @@ def get_folder_url(row_id):
     if not url:
         return jsonify({"url": None, "error": "No Drive folder found"}), 404
     return jsonify({"url": url, "folderId": result.get("folderId"), "source": result.get("source")})
+
+
+@app.route("/submissions/<int:row_id>", methods=["DELETE"])
+def delete_submission(row_id):
+    """Delete a test/demo submission. GAS only allows deletion of rows flagged testEntry=TRUE."""
+    if not check_api_key(request):
+        return jsonify({"error": "Unauthorized"}), 401
+    result = gas_post({
+        "action": "deleteRow",
+        "rowId":  row_id,
+    }, timeout=30, gas_url=demo_gas_url(request))
+    if result is None:
+        return jsonify({"error": "GAS error"}), 502
+    if result.get("error"):
+        return jsonify({"error": result["error"]}), 400
+    return jsonify({"status": "ok"})
