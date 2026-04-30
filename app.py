@@ -550,80 +550,55 @@ def fill():
     if not data:
         return jsonify({"error": "No JSON data received"}), 400
 
-    try:
-        first = data.get("firstName", "employee").strip()
-        last  = data.get("lastName",  "").strip()
-        name  = f"{first}_{last}".replace(" ", "_")
+    first = data.get("firstName", "employee").strip()
+    last  = data.get("lastName",  "").strip()
+    name  = f"{first}_{last}".replace(" ", "_")
 
-        w4_bytes    = fill_w4(data)
-        de_w4_bytes = fill_de_w4(data)
-        i9_bytes    = fill_i9_section1(data)
+    # All PDF generation, signature overlay, Drive upload, and Sheet logging
+    # happen in a background thread. The employee sees success instantly.
+    import threading
+    def _background(data, first, last, name):
+        try:
+            today_str = fmt_date(date.today().isoformat())
+            sig_b64   = data.get("signatureImage", "")
 
-        # Overlay drawn signature image if provided
-        sig_b64 = data.get("signatureImage", "")
-        today_str = fmt_date(date.today().isoformat())
-        if sig_b64:
-            # W4: Step 5 signature line at y≈86; blank signing space y=88–108.
-            # Date column starts at x≈408. (Measured by rendering PDF at 150 DPI.)
-            w4_bytes = overlay_signature_image(w4_bytes, sig_b64, [(0, 100, 88, 290, 18)])
-            w4_bytes = overlay_text(w4_bytes, today_str, 0, 415, 91)
-            # DE W4: signature/date line at y≈432; blank space y=433–453.
-            # Date column starts at x≈401.
-            de_w4_bytes = overlay_signature_image(de_w4_bytes, sig_b64, [(0, 79, 432, 295, 20)])
-            de_w4_bytes = overlay_text(de_w4_bytes, today_str, 0, 401, 436)
-            # I-9: AcroForm "Signature of Employee" field rect=[42.1, 420.8, 365.3, 433.7].
-            # Today's Date is already filled via AcroForm — no text overlay needed.
-            i9_bytes = overlay_signature_image(i9_bytes, sig_b64, [(0, 42, 421, 315, 22)])
+            w4_bytes    = fill_w4(data)
+            de_w4_bytes = fill_de_w4(data)
+            i9_bytes    = fill_i9_section1(data)
 
-        zip_filename = f"{name}_onboarding_docs.zip"
-        zip_buf = io.BytesIO()
-        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(f"{name}_W4_Federal.pdf",  w4_bytes)
-            zf.writestr(f"{name}_W4_Delaware.pdf", de_w4_bytes)
-            zf.writestr(f"{name}_I9.pdf",          i9_bytes)
-        zip_bytes = zip_buf.getvalue()
+            if sig_b64:
+                w4_bytes    = overlay_signature_image(w4_bytes,    sig_b64, [(0, 100, 88,  290, 18)])
+                w4_bytes    = overlay_text(w4_bytes,    today_str, 0, 415, 91)
+                de_w4_bytes = overlay_signature_image(de_w4_bytes, sig_b64, [(0,  79, 432, 295, 20)])
+                de_w4_bytes = overlay_text(de_w4_bytes, today_str, 0, 401, 436)
+                i9_bytes    = overlay_signature_image(i9_bytes,    sig_b64, [(0,  42, 421, 315, 22)])
 
-        # Drive uploads + Sheet logging run in a background thread so the
-        # employee gets their ZIP (and sees the success screen) immediately.
-        # GAS cold starts can take 60s+ — no reason to make the employee wait.
-        import threading
-        def _background(data, first, last, name, w4_bytes, de_w4_bytes, i9_bytes):
-            try:
-                is_demo  = data.get("mode") == "demo"
-                g_url    = DEMO_GAS_URL    if is_demo else None
-                g_folder = DEMO_DRIVE_FOLDER if is_demo else None
-                emp_folder_id, emp_folder_url = create_employee_folder(
-                    f"{first} {last}", gas_url=g_url, folder_id=g_folder
-                )
-                target_folder = emp_folder_id or (g_folder or DRIVE_FOLDER_ID)
-                i9_file_id, _ = upload_file_to_drive(
-                    f"{name}_I9.pdf", i9_bytes, "application/pdf", target_folder, gas_url=g_url
-                )
-                upload_file_to_drive(
-                    f"{name}_W4_Federal.pdf", w4_bytes, "application/pdf", target_folder, gas_url=g_url
-                )
-                upload_file_to_drive(
-                    f"{name}_W4_Delaware.pdf", de_w4_bytes, "application/pdf", target_folder, gas_url=g_url
-                )
-                log_to_sheet(data, zip_drive_url=emp_folder_url or "", i9_file_id=i9_file_id or "", gas_url=g_url)
-            except Exception as exc:
-                print(f"[background /fill] Drive/Sheet error: {exc}")
+            is_demo  = data.get("mode") == "demo"
+            g_url    = DEMO_GAS_URL      if is_demo else None
+            g_folder = DEMO_DRIVE_FOLDER if is_demo else None
 
-        threading.Thread(
-            target=_background,
-            args=(data, first, last, name, w4_bytes, de_w4_bytes, i9_bytes),
-            daemon=True,
-        ).start()
+            emp_folder_id, emp_folder_url = create_employee_folder(
+                f"{first} {last}", gas_url=g_url, folder_id=g_folder
+            )
+            target_folder = emp_folder_id or (g_folder or DRIVE_FOLDER_ID)
 
-        return send_file(
-            io.BytesIO(zip_bytes),
-            mimetype="application/zip",
-            as_attachment=True,
-            download_name=zip_filename,
-        )
+            i9_file_id, _ = upload_file_to_drive(
+                f"{name}_I9.pdf", i9_bytes, "application/pdf", target_folder, gas_url=g_url
+            )
+            upload_file_to_drive(
+                f"{name}_W4_Federal.pdf", w4_bytes, "application/pdf", target_folder, gas_url=g_url
+            )
+            upload_file_to_drive(
+                f"{name}_W4_Delaware.pdf", de_w4_bytes, "application/pdf", target_folder, gas_url=g_url
+            )
+            log_to_sheet(data, zip_drive_url=emp_folder_url or "", i9_file_id=i9_file_id or "", gas_url=g_url)
+            print(f"[/fill] background complete for {name}")
+        except Exception as exc:
+            print(f"[/fill] background error for {name}: {exc}")
 
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+    threading.Thread(target=_background, args=(data, first, last, name), daemon=True).start()
+
+    return jsonify({"status": "ok"})
 
 
 @app.route("/submissions", methods=["GET"])
