@@ -596,7 +596,7 @@ def fill():
         except Exception as exc:
             print(f"[/fill] background error for {name}: {exc}")
 
-    threading.Thread(target=_background, args=(data, first, last, name), daemon=True).start()
+    threading.Thread(target=_background, args=(data, first, last, name), daemon=False).start()
 
     return jsonify({"status": "ok"})
 
