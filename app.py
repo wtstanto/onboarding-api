@@ -11,7 +11,10 @@ POST /welcome                 → send welcome email with handbook to new hire (
 import os
 import io
 import json
+import time
+import hmac
 import base64
+import hashlib
 import zipfile
 from datetime import date, datetime
 
@@ -22,7 +25,28 @@ from pypdf import PdfReader, PdfWriter
 from pypdf.generic import NameObject, BooleanObject
 
 app = Flask(__name__)
-CORS(app)
+# Reject submissions over 5 MB (signature PNG is the only large field)
+app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024
+# Restrict cross-origin requests to the production hosts
+CORS(app, origins=[
+    "https://gomiddleman.com",
+    "https://www.gomiddleman.com",
+    "https://previews.gomiddleman.com",
+    "https://de112.com",
+    "https://www.de112.com",
+])
+
+# Fields that must NEVER appear in stdout / Railway logs
+_REDACT_KEYS = {"ssn", "routingNumber", "accountNumber", "signatureImage",
+                "secret", "password", "fileData"}
+
+def _redact(obj):
+    """Return a copy of obj with sensitive values masked. Safe for logging."""
+    if isinstance(obj, dict):
+        return {k: ("***" if k in _REDACT_KEYS else _redact(v)) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_redact(v) for v in obj]
+    return obj
 
 # ─── Paths ───────────────────────────────────────────────────────────────────
 
@@ -40,9 +64,6 @@ GMAIL_APP_PASS   = os.environ.get("GMAIL_APP_PASSWORD", "")
 HANDBOOK_PATH    = os.path.join(BASE_DIR, "handbook.pdf")
 GAS_SECRET       = os.environ.get("GAS_SECRET", "")
 DRIVE_FOLDER_ID  = os.environ.get("DRIVE_FOLDER_ID", "")
-DEMO_GAS_URL      = os.environ.get("DEMO_GAS_URL", "")
-DEMO_DRIVE_FOLDER = os.environ.get("DEMO_DRIVE_FOLDER_ID", "")
-DEMO_ADMIN_API_KEY = os.environ.get("DEMO_ADMIN_API_KEY", "")
 
 TWILIO_ACCOUNT_SID     = os.environ.get("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN      = os.environ.get("TWILIO_AUTH_TOKEN", "")
@@ -53,74 +74,75 @@ RESEND_FROM_EMAIL      = os.environ.get("RESEND_FROM_EMAIL", "onboarding@de112.c
 
 
 def check_api_key(req):
-    key = req.headers.get("X-API-Key", "")
-    if DEMO_ADMIN_API_KEY and key == DEMO_ADMIN_API_KEY:
-        return True
+    """Constant-time API key check. Fails closed if ADMIN_API_KEY is unset."""
     if not ADMIN_API_KEY:
-        return True
-    return key == ADMIN_API_KEY
-
-
-def is_demo_request(req):
-    """True when the request was authenticated with the demo API key."""
+        return False
     key = req.headers.get("X-API-Key", "")
-    return bool(DEMO_ADMIN_API_KEY and key == DEMO_ADMIN_API_KEY)
-
-
-def demo_gas_url(req):
-    return DEMO_GAS_URL if is_demo_request(req) else None
-
-
-def demo_folder(req):
-    return DEMO_DRIVE_FOLDER if is_demo_request(req) else None
+    return hmac.compare_digest(key, ADMIN_API_KEY)
 
 
 # ─── Google Apps Script helpers ──────────────────────────────────────────────
 
-def gas_post(payload, timeout=30, gas_url=None):
-    """POST to GAS webhook, follow redirect as GET, return parsed JSON or None."""
+def gas_post(payload, timeout=30, gas_url=None, attempts=3):
+    """POST to GAS webhook with retries. Returns parsed JSON or None.
+
+    Retries on network/timeout errors (typical transient GAS hiccup).
+    Does NOT retry on 4xx/5xx — those are deterministic errors.
+    """
     url = gas_url or GAS_WEBHOOK_URL
     if not url:
         return None
-    try:
-        payload["secret"] = GAS_SECRET
-        headers = {"Content-Type": "application/json"}
-        res = http_requests.post(
-            url, json=payload,
-            headers=headers, timeout=timeout,
-            allow_redirects=False,
-        )
-        if res.status_code in (301, 302, 303, 307, 308):
-            redirect_url = res.headers.get("Location")
-            res = http_requests.get(redirect_url, timeout=timeout)
-        res.raise_for_status()
-        return res.json()
-    except Exception as exc:
-        print(f"[GAS] error: {exc}")
-        return None
+    payload["secret"] = GAS_SECRET
+    headers = {"Content-Type": "application/json"}
+    last_err = None
+    for attempt in range(attempts):
+        try:
+            res = http_requests.post(
+                url, json=payload, headers=headers,
+                timeout=timeout, allow_redirects=False,
+            )
+            if res.status_code in (301, 302, 303, 307, 308):
+                redirect_url = res.headers.get("Location")
+                res = http_requests.get(redirect_url, timeout=timeout)
+            res.raise_for_status()
+            return res.json()
+        except (http_requests.Timeout, http_requests.ConnectionError) as exc:
+            last_err = exc
+            if attempt < attempts - 1:
+                time.sleep(1.5 ** attempt)
+                continue
+            print(f"[GAS] action={payload.get('action')} failed after {attempts} attempts: {exc}")
+            return None
+        except Exception as exc:
+            print(f"[GAS] action={payload.get('action')} error: {exc}")
+            return None
+    return None
+
+
+class DriveError(RuntimeError):
+    """Raised when a Drive operation fails — caller decides how to recover."""
 
 
 def create_employee_folder(folder_name, gas_url=None, folder_id=None):
-    """Create a subfolder in the main Drive folder. Returns (folderId, url) or (None, None)."""
+    """Create a subfolder. Raises DriveError on failure."""
     parent = folder_id or DRIVE_FOLDER_ID
     if not parent:
-        return None, None
+        raise DriveError("DRIVE_FOLDER_ID not configured")
     result = gas_post({
         "action":        "createFolder",
         "parentFolderId": parent,
         "folderName":    folder_name,
     }, timeout=30, gas_url=gas_url)
-    print(f"[Drive] createFolder '{folder_name}' result: {result}")
-    if result and "folderId" in result:
-        return result["folderId"], result.get("url", "")
-    return None, None
+    if not result or "folderId" not in result:
+        raise DriveError(f"createFolder failed for '{folder_name}': {result}")
+    return result["folderId"], result.get("url", "")
 
 
 def upload_file_to_drive(filename, file_bytes, mimetype, folder_id=None, gas_url=None):
-    """Upload file_bytes to Drive via GAS. Returns (fileId, url) or (None, None)."""
+    """Upload file_bytes to Drive via GAS. Raises DriveError on failure."""
     target = folder_id or DRIVE_FOLDER_ID
     if not target:
-        return None, None
+        raise DriveError("No target folder for upload")
     result = gas_post({
         "action":   "uploadFile",
         "folderId": target,
@@ -128,9 +150,9 @@ def upload_file_to_drive(filename, file_bytes, mimetype, folder_id=None, gas_url
         "mimeType": mimetype,
         "fileData": base64.b64encode(file_bytes).decode("utf-8"),
     }, timeout=60, gas_url=gas_url)
-    if result and "fileId" in result:
-        return result["fileId"], result.get("url", "")
-    return None, None
+    if not result or "fileId" not in result:
+        raise DriveError(f"uploadFile failed for '{filename}': {result}")
+    return result["fileId"], result.get("url", "")
 
 
 def download_file_from_drive(file_id):
@@ -154,12 +176,29 @@ def replace_drive_file(file_id, filename, file_bytes):
     return None, None
 
 
+def _client_request_id(data):
+    """Stable hash of identity fields → idempotency key on the GAS side.
+
+    Same employee submitting twice within the GAS dedupe window produces the
+    same id. Different employees, or the same employee on a different day,
+    produce different ids.
+    """
+    ssn = "".join(c for c in (data.get("ssn") or "") if c.isdigit())
+    parts = [
+        (data.get("email") or "").strip().lower(),
+        (data.get("dob") or "").strip(),
+        ssn[-4:] if len(ssn) >= 4 else "",
+    ]
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+
+
 def log_to_sheet(data, zip_drive_url="", i9_file_id="", gas_url=None):
     ssn    = data.get("ssn", "")
     digits = "".join(c for c in ssn if c.isdigit())
     masked = f"***-**-{digits[-4:]}" if len(digits) >= 4 else "***"
     result = gas_post({
         "action":           "log",
+        "clientRequestId":  _client_request_id(data),
         "submittedAt":      datetime.utcnow().isoformat(),
         "firstName":        data.get("firstName",      ""),
         "lastName":         data.get("lastName",        ""),
@@ -185,8 +224,53 @@ def log_to_sheet(data, zip_drive_url="", i9_file_id="", gas_url=None):
         "routingNumber":    data.get("routingNumber",   ""),
         "accountNumber":    data.get("accountNumber",   ""),
         "accountType":      data.get("accountType",     ""),
-    }, timeout=90, gas_url=gas_url)
+    }, timeout=30, gas_url=gas_url, attempts=3)
     return result.get("rowId") if result else None
+
+
+def update_row_files(row_id, drive_folder_url, i9_file_id, gas_url=None):
+    """After PDFs are generated/uploaded, patch the row with file references."""
+    return gas_post({
+        "action":       "updateFiles",
+        "rowId":        row_id,
+        "zipDriveUrl":  drive_folder_url or "",
+        "i9FileId":     i9_file_id or "",
+    }, timeout=30, gas_url=gas_url, attempts=3)
+
+
+def send_employee_confirmation(data):
+    """One-line 'we got your paperwork' receipt. Best-effort, never raises."""
+    if not RESEND_API_KEY:
+        return
+    to_email = (data.get("email") or "").strip()
+    if not to_email or "@" not in to_email:
+        return
+    first = (data.get("firstName") or "there").strip()
+    try:
+        http_requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from":    f"Auntie Anne's Onboarding <{RESEND_FROM_EMAIL}>",
+                "to":      [to_email],
+                "subject": "We received your onboarding paperwork",
+                "text":    (
+                    f"Hi {first},\n\n"
+                    "Thanks for completing your onboarding paperwork with Auntie Anne's. "
+                    "We've received it and your manager will be in touch shortly with next steps "
+                    "(start date, training, uniform, etc.).\n\n"
+                    "If you didn't expect this email, you can ignore it.\n\n"
+                    "— Auntie Anne's, Christiana Mall"
+                ),
+            },
+            timeout=10,
+        )
+    except Exception as exc:
+        # Never let email failure affect the actual submission flow
+        print(f"[email] confirmation send failed: {exc}")
 
 
 def _is_date(val):
@@ -548,20 +632,61 @@ def health():
     return jsonify({"status": "ok"}), 200
 
 
+def _validate_fill_payload(data):
+    """Return None if valid, else an error string. Backend safety net for
+    cases where the frontend was bypassed (curl, malicious POST)."""
+    required = ["firstName", "lastName", "ssn", "dob", "email"]
+    for f in required:
+        if not str(data.get(f) or "").strip():
+            return f"Missing required field: {f}"
+    ssn_digits = "".join(c for c in str(data.get("ssn", "")) if c.isdigit())
+    if len(ssn_digits) != 9:
+        return "SSN must be 9 digits"
+    routing = "".join(c for c in str(data.get("routingNumber", "")) if c.isdigit())
+    if routing and len(routing) != 9:
+        return "Routing number must be 9 digits"
+    email = str(data.get("email", ""))
+    if "@" not in email or "." not in email.split("@")[-1]:
+        return "Invalid email address"
+    return None
+
+
 @app.route("/fill", methods=["POST"])
 def fill():
     data = request.get_json()
     if not data:
         return jsonify({"error": "No JSON data received"}), 400
 
+    err = _validate_fill_payload(data)
+    if err:
+        return jsonify({"error": err}), 400
+
     first = data.get("firstName", "employee").strip()
     last  = data.get("lastName",  "").strip()
     name  = f"{first}_{last}".replace(" ", "_")
 
-    # All PDF generation, signature overlay, Drive upload, and Sheet logging
-    # happen in a background thread. The employee sees success instantly.
+    # ── STEP 1 (sync, blocking): write the row to the sheet FIRST ──────────
+    # This is the durability guarantee: even if PDF generation or Drive upload
+    # crashes later, the employee's data (incl. bank info for ADP) is captured.
+    # The GAS `log` action is idempotent on clientRequestId, so a network retry
+    # from the client won't create a duplicate row.
+    row_id = log_to_sheet(data)
+    if row_id is None:
+        # GAS unreachable after retries — fail loud so the employee can retry.
+        # Nothing was lost: the form still has all their data.
+        return jsonify({
+            "error": "We couldn't save your submission right now. Please try again in a moment.",
+        }), 503
+
+    # ── STEP 2 (best-effort): send confirmation email ──────────────────────
+    # Wrapped — never fails the request.
+    send_employee_confirmation(data)
+
+    # ── STEP 3 (background): generate PDFs, upload to Drive, patch the row.
+    # If this fails, the row is still in the sheet with all PII. The manager
+    # can re-run PDF generation from the admin panel later.
     import threading
-    def _background(data, first, last, name):
+    def _background(data, first, last, name, row_id):
         try:
             today_str = fmt_date(date.today().isoformat())
             sig_b64   = data.get("signatureImage", "")
@@ -577,39 +702,37 @@ def fill():
                 de_w4_bytes = overlay_text(de_w4_bytes, today_str, 0, 401, 436)
                 i9_bytes    = overlay_signature_image(i9_bytes,    sig_b64, [(0,  42, 421, 315, 22)])
 
-            is_demo  = data.get("mode") == "demo"
-            g_url    = DEMO_GAS_URL      if is_demo else None
-            g_folder = DEMO_DRIVE_FOLDER if is_demo else None
-
-            emp_folder_id, emp_folder_url = create_employee_folder(
-                f"{first} {last}", gas_url=g_url, folder_id=g_folder
-            )
-            target_folder = emp_folder_id or (g_folder or DRIVE_FOLDER_ID)
+            emp_folder_id, emp_folder_url = create_employee_folder(f"{first} {last}")
 
             i9_file_id, _ = upload_file_to_drive(
-                f"{name}_I9.pdf", i9_bytes, "application/pdf", target_folder, gas_url=g_url
+                f"{name}_I9.pdf", i9_bytes, "application/pdf", emp_folder_id
             )
             upload_file_to_drive(
-                f"{name}_W4_Federal.pdf", w4_bytes, "application/pdf", target_folder, gas_url=g_url
+                f"{name}_W4_Federal.pdf", w4_bytes, "application/pdf", emp_folder_id
             )
             upload_file_to_drive(
-                f"{name}_W4_Delaware.pdf", de_w4_bytes, "application/pdf", target_folder, gas_url=g_url
+                f"{name}_W4_Delaware.pdf", de_w4_bytes, "application/pdf", emp_folder_id
             )
-            log_to_sheet(data, zip_drive_url=emp_folder_url or "", i9_file_id=i9_file_id or "", gas_url=g_url)
-            print(f"[/fill] background complete for {name}")
+            update_row_files(row_id, emp_folder_url, i9_file_id)
+            print(f"[/fill] background complete for row {row_id}")
         except Exception as exc:
-            print(f"[/fill] background error for {name}: {exc}")
+            # The row already exists — log and move on. Manager can re-trigger.
+            print(f"[/fill] background error for row {row_id}: {exc}")
 
-    threading.Thread(target=_background, args=(data, first, last, name), daemon=False).start()
+    threading.Thread(
+        target=_background,
+        args=(data, first, last, name, row_id),
+        daemon=True,  # don't block worker shutdown
+    ).start()
 
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok", "rowId": row_id})
 
 
 @app.route("/submissions", methods=["GET"])
 def get_submissions():
     if not check_api_key(request):
         return jsonify({"error": "Unauthorized"}), 401
-    result = gas_post({"action": "getAll"}, gas_url=demo_gas_url(request))
+    result = gas_post({"action": "getAll"})
     if result is None:
         return jsonify([])
     if "error" in result:
@@ -625,10 +748,8 @@ def complete_i9(row_id):
     data = request.get_json()
     if not data:
         return jsonify({"error": "No JSON data"}), 400
-
-    g_url = demo_gas_url(request)
     # ── Round trip 1: get row data (start date + I-9 file ID) ────────────────
-    row_result = gas_post({"action": "getRow", "rowId": row_id}, timeout=60, gas_url=g_url)
+    row_result = gas_post({"action": "getRow", "rowId": row_id}, timeout=60)
     if row_result is None:
         return jsonify({"error": "GAS webhook not configured"}), 500
     if "error" in row_result:
@@ -647,7 +768,7 @@ def complete_i9(row_id):
         return jsonify({"error": "I-9 file not found for this employee"}), 404
 
     # ── Round trip 2: download current I-9 PDF from Drive ────────────────────
-    file_result = gas_post({"action": "getFile", "fileId": i9_file_id}, timeout=60, gas_url=g_url)
+    file_result = gas_post({"action": "getFile", "fileId": i9_file_id}, timeout=60)
     if file_result is None or "error" in (file_result or {}):
         return jsonify({"error": "Failed to download I-9 from Drive"}), 500
 
@@ -669,7 +790,7 @@ def complete_i9(row_id):
         "fileId":   i9_file_id,
         "filename": f"I9_COMPLETED_row{actual_row_id}.pdf",
         "fileData": base64.b64encode(updated_i9).decode("utf-8"),
-    }, timeout=60, gas_url=g_url)
+    }, timeout=60)
     if replace_result is None or "error" in (replace_result or {}):
         return jsonify({"error": "Failed to replace I-9 file in Drive"}), 500
 
@@ -685,7 +806,7 @@ def complete_i9(row_id):
         "expDate":     data.get("expDate",   ""),
         "empName":     data.get("empName",   ""),
         "newI9FileId": new_file_id,
-    }, timeout=60, gas_url=g_url)
+    }, timeout=60)
     if complete_result is None:
         return jsonify({"error": "GAS webhook not configured"}), 500
     if "error" in complete_result:
@@ -700,11 +821,14 @@ def complete_i9(row_id):
 
 @app.route("/debug", methods=["GET"])
 def debug():
+    if not check_api_key(request):
+        return jsonify({"error": "Unauthorized"}), 401
     return jsonify({
         "gas_configured":    bool(GAS_WEBHOOK_URL),
         "drive_configured":  bool(DRIVE_FOLDER_ID),
         "admin_key_set":     bool(ADMIN_API_KEY),
         "gas_secret_set":    bool(GAS_SECRET),
+        "resend_configured": bool(RESEND_API_KEY),
     })
 
 
@@ -1187,7 +1311,7 @@ def update_employment(row_id):
         "location": data.get("location", ""),
         "deptCode": data.get("deptCode", ""),
         "hireDate": data.get("hireDate", ""),
-    }, timeout=20, gas_url=demo_gas_url(request))
+    }, timeout=20)
     if not result or "error" in result:
         return jsonify({"error": (result or {}).get("error", "GAS error")}), 500
     return jsonify({"status": "ok"})
@@ -1203,7 +1327,7 @@ def export_for_system(row_id, system):
     """
     # Query-param auth for file downloads (no custom header possible)
     provided = request.args.get("key", "") or request.headers.get("X-API-Key", "")
-    valid_keys = {k for k in [ADMIN_API_KEY, DEMO_ADMIN_API_KEY] if k}
+    valid_keys = {ADMIN_API_KEY} if ADMIN_API_KEY else set()
     if valid_keys and provided not in valid_keys:
         return jsonify({"error": "Unauthorized"}), 401
 
@@ -1279,7 +1403,7 @@ def update_working_papers(row_id):
         "rowId":  row_id,
         "field":  field,
         "value":  body.get("value", True),
-    }, timeout=90, gas_url=demo_gas_url(request))
+    }, timeout=90)
     if result is None:
         return jsonify({"error": "GAS error"}), 502
     return jsonify(result)
@@ -1340,7 +1464,7 @@ def update_status(row_id):
         "rowId":  row_id,
         "status": status,
         "reason": body.get("reason", ""),
-    }, timeout=90, gas_url=demo_gas_url(request))
+    }, timeout=90)
     if result is None:
         return jsonify({"error": "GAS error"}), 502
     return jsonify(result)
@@ -1359,7 +1483,7 @@ def get_folder_url(row_id):
     result = gas_post({
         "action": "getEmployeeFolderUrl",
         "rowId":  row_id,
-    }, timeout=90, gas_url=demo_gas_url(request))
+    }, timeout=90)
     if result is None:
         return jsonify({"error": "GAS error"}), 502
     if result.get("error"):
@@ -1378,7 +1502,7 @@ def delete_submission(row_id):
     result = gas_post({
         "action": "deleteRow",
         "rowId":  row_id,
-    }, timeout=30, gas_url=demo_gas_url(request))
+    }, timeout=30)
     if result is None:
         return jsonify({"error": "GAS error"}), 502
     if result.get("error"):

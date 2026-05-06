@@ -38,6 +38,27 @@ function doPost(e) {
 
     // ── Log new employee submission ───────────────────────────────────────
     if (data.action === 'log') {
+      // Idempotency: if a row with the same clientRequestId was added in the
+      // last 30 minutes, return its rowId instead of appending a duplicate.
+      // Protects against double-submit (network retry, double-tap, etc.).
+      const reqId = (data.clientRequestId || '').toString();
+      if (reqId) {
+        const lastRow = sheet.getLastRow();
+        const scanFrom = Math.max(2, lastRow - 200);  // last 200 rows is plenty
+        if (lastRow >= scanFrom) {
+          const recent = sheet.getRange(scanFrom, 1, lastRow - scanFrom + 1, 52).getValues();
+          const cutoff = Date.now() - 30 * 60 * 1000;
+          for (let i = recent.length - 1; i >= 0; i--) {
+            const row = recent[i];
+            if ((row[51] || '').toString() === reqId) {
+              const ts = new Date(row[0]).getTime();
+              if (!isNaN(ts) && ts >= cutoff) {
+                return json({ status: 'ok', rowId: scanFrom + i, deduped: true });
+              }
+            }
+          }
+        }
+      }
       sheet.appendRow([
         data.submittedAt    || new Date().toISOString(), // A
         data.firstName      || '',  // B
@@ -72,8 +93,21 @@ function doPost(e) {
         data.routingNumber  || '',  // AW(49)  routing number
         data.accountNumber  || '',  // AX(50)  account number (full — for ADP entry)
         data.accountType    || '',  // AY(51)  account type (checking/savings)
+        reqId,                      // AZ(52)  clientRequestId (for idempotency)
       ]);
       return json({ status: 'ok', rowId: sheet.getLastRow() });
+    }
+
+    // ── Patch the row with Drive folder URL + I-9 file ID ────────────────
+    // Called by Flask after PDFs finish generating + uploading in the
+    // background. The row already exists from the initial `log` call; this
+    // just fills in the file references.
+    if (data.action === 'updateFiles') {
+      const rowId = parseInt(data.rowId);
+      if (!rowId || rowId < 2) return json({ error: 'Invalid rowId' });
+      if (data.zipDriveUrl) sheet.getRange(rowId, 13).setValue(data.zipDriveUrl);  // M
+      if (data.i9FileId)    sheet.getRange(rowId, 20).setValue(data.i9FileId);     // T
+      return json({ status: 'ok' });
     }
 
     // ── Return all employees ──────────────────────────────────────────────
@@ -200,23 +234,24 @@ function doPost(e) {
     }
 
     // ── Create a subfolder in Drive ──────────────────────────────────────
+    // No anyone-with-link sharing — child folders inherit parent permissions,
+    // so anyone the parent folder is shared with (managers) gets access; nobody else.
     if (data.action === 'createFolder') {
       const parent = DriveApp.getFolderById(data.parentFolderId);
       const folder = parent.createFolder(data.folderName);
-      folder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-      // Inherit editors and viewers from parent folder
+      // Explicitly inherit editors and viewers from parent folder
       parent.getEditors().forEach(u => folder.addEditor(u));
       parent.getViewers().forEach(u => folder.addViewer(u));
       return json({ folderId: folder.getId(), url: folder.getUrl() });
     }
 
     // ── Upload a file to Drive ────────────────────────────────────────────
+    // No anyone-with-link sharing — files inherit folder permissions.
     if (data.action === 'uploadFile') {
       const folder = DriveApp.getFolderById(data.folderId);
       const bytes  = Utilities.base64Decode(data.fileData);
       const blob   = Utilities.newBlob(bytes, data.mimeType || 'application/octet-stream', data.filename);
       const file   = folder.createFile(blob);
-      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
       return json({ fileId: file.getId(), url: file.getUrl() });
     }
 
@@ -259,7 +294,6 @@ function doPost(e) {
       const bytes   = Utilities.base64Decode(data.fileData);
       const blob    = Utilities.newBlob(bytes, 'application/pdf', name);
       const newFile = parent.createFile(blob);
-      newFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
       const newFileId = newFile.getId();
       // Update sheet row
       const rowId   = parseInt(data.rowId);
@@ -290,7 +324,6 @@ function doPost(e) {
       const bytes   = Utilities.base64Decode(data.fileData);
       const blob    = Utilities.newBlob(bytes, 'application/pdf', name);
       const newFile = parent.createFile(blob);
-      newFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
       return json({ fileId: newFile.getId(), url: newFile.getUrl() });
     }
 
@@ -315,6 +348,13 @@ function doPost(e) {
         'Status', 'Activated At', 'Inactive At', 'Inactive Reason',  // AN, AO, AP, AQ
         'Drive Folder ID',                       // AR
         'T-Shirt Size',                          // AS
+        'I-9 S1 Docs (JSON)',                    // AT
+        'Test Entry',                            // AU
+        'Bank Name',                             // AV
+        'Routing Number',                        // AW
+        'Account Number',                        // AX
+        'Account Type',                          // AY
+        'Client Request ID',                     // AZ
       ];
       // Only insert if row 1 is not already a header
       const first = sheet.getRange(1, 1).getValue();
@@ -448,7 +488,7 @@ function doPost(e) {
         data.filename || ('working-papers-' + new Date().toISOString().slice(0,10) + '.jpg')
       );
       const file = folder.createFile(blob);
-      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      // No anyone-with-link sharing — inherits folder permissions.
       // Write file ID to column AM (39) and timestamp to AL (38)
       sheet.getRange(rowId, 39).setValue(file.getId());
       sheet.getRange(rowId, 38).setValue(new Date().toISOString());
@@ -596,6 +636,37 @@ function formatDate(val) {
   } catch (e) {
     return String(val);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Daily backup. Schedule via Triggers (clock icon in editor sidebar):
+//   Add Trigger → function: dailyBackup → time-driven → Day timer → e.g. 2-3am.
+// Keeps the last 14 daily snapshots in a sibling "Onboarding Backups" folder
+// next to the spreadsheet (auto-created on first run); older are trashed.
+// ─────────────────────────────────────────────────────────────────────────
+function dailyBackup() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const file = DriveApp.getFileById(ss.getId());
+  // Find sibling "Onboarding Backups" folder, or create it
+  const parents = file.getParents();
+  const parent = parents.hasNext() ? parents.next() : DriveApp.getRootFolder();
+  let backupFolder;
+  const existing = parent.getFoldersByName('Onboarding Backups');
+  if (existing.hasNext()) {
+    backupFolder = existing.next();
+  } else {
+    backupFolder = parent.createFolder('Onboarding Backups');
+  }
+  // Copy the spreadsheet with today's date stamp
+  const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  const name = ss.getName() + ' — backup ' + stamp;
+  file.makeCopy(name, backupFolder);
+  // Trim to most recent 14 backups
+  const backups = [];
+  const iter = backupFolder.getFiles();
+  while (iter.hasNext()) backups.push(iter.next());
+  backups.sort((a, b) => b.getDateCreated() - a.getDateCreated());
+  backups.slice(14).forEach(f => f.setTrashed(true));
 }
 
 // ─────────────────────────────────────────────────────────────────────────
