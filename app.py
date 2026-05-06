@@ -71,6 +71,7 @@ TWILIO_FROM_NUMBER     = os.environ.get("TWILIO_FROM_NUMBER", "")
 TWILIO_MESSAGING_SID   = os.environ.get("TWILIO_MESSAGING_SERVICE_SID", "")
 RESEND_API_KEY         = os.environ.get("RESEND_API_KEY", "")
 RESEND_FROM_EMAIL      = os.environ.get("RESEND_FROM_EMAIL", "onboarding@de112.com")
+OWNER_NOTIFY_EMAIL     = os.environ.get("OWNER_NOTIFY_EMAIL", "wtstanto@gmail.com")
 
 
 def check_api_key(req):
@@ -236,6 +237,41 @@ def update_row_files(row_id, drive_folder_url, i9_file_id, gas_url=None):
         "zipDriveUrl":  drive_folder_url or "",
         "i9FileId":     i9_file_id or "",
     }, timeout=30, gas_url=gas_url, attempts=3)
+
+
+def send_failure_alert(row_id, employee_name, error_msg):
+    """Email the owner when a background PDF/Drive job fails. Best-effort."""
+    if not RESEND_API_KEY or not OWNER_NOTIFY_EMAIL:
+        return
+    try:
+        http_requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from":    f"Onboarding Alerts <{RESEND_FROM_EMAIL}>",
+                "to":      [OWNER_NOTIFY_EMAIL],
+                "subject": f"⚠️ Onboarding background job failed for {employee_name}",
+                "text":    (
+                    f"A background PDF/Drive job failed for an employee submission.\n\n"
+                    f"Employee: {employee_name}\n"
+                    f"Sheet row: {row_id}\n"
+                    f"Error: {error_msg}\n\n"
+                    f"The employee's data IS saved in the sheet (the failure happened "
+                    f"after the row was written). What to do:\n"
+                    f"  1. Open the admin dashboard\n"
+                    f"  2. Find row {row_id}\n"
+                    f"  3. Click 'Regenerate PDFs' to retry PDF generation\n"
+                    f"     (note: SSN will be masked and signature missing — see button tooltip)\n\n"
+                    f"If regenerate also fails, ask the employee to resubmit the form."
+                ),
+            },
+            timeout=10,
+        )
+    except Exception as exc:
+        print(f"[email] failure alert send failed: {exc}")
 
 
 def send_employee_confirmation(data):
@@ -716,8 +752,10 @@ def fill():
             update_row_files(row_id, emp_folder_url, i9_file_id)
             print(f"[/fill] background complete for row {row_id}")
         except Exception as exc:
-            # The row already exists — log and move on. Manager can re-trigger.
+            # The row already exists — log, alert the owner, and move on.
+            # Manager can use the Regenerate PDFs button to retry.
             print(f"[/fill] background error for row {row_id}: {exc}")
+            send_failure_alert(row_id, f"{first} {last}".strip() or "(unknown)", str(exc))
 
     threading.Thread(
         target=_background,
@@ -1437,6 +1475,96 @@ def upload_working_papers(row_id):
         return jsonify(r.json())
     except Exception as e:
         return jsonify({"error": f"GAS error: {e}"}), 502
+
+
+@app.route("/submissions/<int:row_id>/regenerate-pdfs", methods=["POST"])
+def regenerate_pdfs(row_id):
+    """Regenerate W-4, DE W-4, and I-9 PDFs from sheet data.
+
+    Used as a recovery path when the original background PDF generation failed
+    (or files were accidentally deleted from Drive). Limitations:
+      • SSN in the sheet is masked → regenerated PDFs will show ***-**-XXXX
+      • Original signature is not stored → forms are unsigned
+    Manager must print and have employee re-sign / hand-write SSN.
+    """
+    if not check_api_key(request):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    row_result = gas_post({"action": "getRow", "rowId": row_id}, timeout=30)
+    if not row_result or "row" not in row_result:
+        return jsonify({"error": "Could not load row from sheet"}), 502
+    row = row_result["row"]
+    while len(row) < 52:
+        row.append("")
+
+    first = str(row[1] or "").strip()
+    last  = str(row[2] or "").strip()
+    if not first and not last:
+        return jsonify({"error": "Row has no employee name — wrong rowId?"}), 400
+
+    # Reconstruct data dict from sheet columns. Anything not in the sheet
+    # (signature, full SSN, citizenship details) will be empty in the PDFs.
+    data = {
+        "firstName":  first,
+        "lastName":   last,
+        "email":      str(row[3] or ""),
+        "phone":      str(row[4] or ""),
+        "ssn":        str(row[5] or ""),       # MASKED
+        "dob":        str(row[6] or ""),
+        "address1":   str(row[7] or ""),
+        "city":       str(row[8] or ""),
+        "state":      str(row[9] or ""),
+        "zip":        str(row[10] or ""),
+        "startDate":  str(row[20] or ""),
+        "ecName":     str(row[21] or ""),
+        "ecRelationship": str(row[22] or ""),
+        "ecPhone":    str(row[23] or ""),
+        "gender":     str(row[25] or ""),
+    }
+
+    name = f"{first}_{last}".replace(" ", "_") or f"row{row_id}"
+
+    try:
+        w4_bytes    = fill_w4(data)
+        de_w4_bytes = fill_de_w4(data)
+        i9_bytes    = fill_i9_section1(data)
+    except Exception as exc:
+        return jsonify({"error": f"PDF generation failed: {exc}"}), 500
+
+    # Reuse existing folder if cached (col AR/index 43), else create new one
+    cached_folder = str(row[43] or "").strip()
+    try:
+        if cached_folder:
+            target_folder = cached_folder
+            folder_url = f"https://drive.google.com/drive/folders/{cached_folder}"
+        else:
+            target_folder, folder_url = create_employee_folder(f"{first} {last}")
+    except DriveError as exc:
+        return jsonify({"error": f"Folder error: {exc}"}), 502
+
+    try:
+        i9_file_id, _ = upload_file_to_drive(
+            f"{name}_I9_REGENERATED.pdf", i9_bytes, "application/pdf", target_folder
+        )
+        upload_file_to_drive(
+            f"{name}_W4_Federal_REGENERATED.pdf", w4_bytes, "application/pdf", target_folder
+        )
+        upload_file_to_drive(
+            f"{name}_W4_Delaware_REGENERATED.pdf", de_w4_bytes, "application/pdf", target_folder
+        )
+    except DriveError as exc:
+        return jsonify({"error": f"Drive upload failed: {exc}"}), 502
+
+    update_row_files(row_id, folder_url, i9_file_id)
+
+    return jsonify({
+        "status": "ok",
+        "folderUrl": folder_url,
+        "warning": (
+            "Regenerated PDFs have masked SSN (last 4 only) and no signature. "
+            "Print and have employee complete by hand."
+        ),
+    })
 
 
 # ── /de112b: employee lifecycle status ────────────────────────────────────
