@@ -1,4 +1,4 @@
-// Auntie Anne's Onboarding — Google Apps Script Webhook
+// Demo Onboarding — Google Apps Script Webhook
 // -------------------------------------------------------
 // Deploy as Web App: Execute as Me, Who has access: Anyone
 // After updating this code, go to Deploy → Manage deployments
@@ -68,6 +68,10 @@ function doPost(e) {
         data.tshirtSize     || '',  // AS(45)  t-shirt size
         data.i9s1docs       || '',  // AT(46)  I-9 Section 1 doc data (JSON)
         data.testEntry ? 'TRUE' : '',  // AU(47)  test/demo submission flag
+        data.bankName       || '',  // AV(48)  bank name
+        data.routingNumber  || '',  // AW(49)  routing number
+        data.accountNumber  || '',  // AX(50)  account number (full — for ADP entry)
+        data.accountType    || '',  // AY(51)  account type (checking/savings)
       ]);
       return json({ status: 'ok', rowId: sheet.getLastRow() });
     }
