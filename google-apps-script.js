@@ -23,9 +23,13 @@ const SHEET_NAME = 'Sheet1';
 // Z(26)  gender                   AA(27) payRate
 // AB(28) position                 AC(29) location
 // AD(30) deptCode                 AE(31) hireDate (confirmed)
-// AF(32) humanityCsvAt            AG(33) quCsvAt
-// AH(34) zignalCsvAt              AI(35) adpSheetAt
-// AJ(36) adpCsvAt
+// AF(32) humanityDoneAt           AG(33) quDoneAt
+// AH(34) zignalDoneAt             AI(35) adpSheetAt
+// AJ(36) adpDoneAt
+// (AF/AG/AH/AJ were originally CSV-download timestamps; now repurposed as
+//  "step manually marked complete" timestamps. Existing values still mean done.)
+// BA(53) humanityBy   BB(54) quBy   BC(55) zignalBy   BD(56) adpBy
+// (initials of who marked the step complete)
 // -- /de112c additions --
 // AS(45) tshirtSize
 
@@ -152,11 +156,19 @@ function doPost(e) {
           location:       row[28] || '',
           deptCode:       row[29] || '',
           hireDate:       row[30] ? formatDate(row[30]) : '',
-          humanityCsvAt:  row[31] ? safeDate(row[31]) : '',
-          quCsvAt:        row[32] ? safeDate(row[32]) : '',
-          zignalCsvAt:    row[33] ? safeDate(row[33]) : '',
+          humanityCsvAt:  row[31] ? safeDate(row[31]) : '',  // legacy alias for humanityDoneAt
+          quCsvAt:        row[32] ? safeDate(row[32]) : '',  // legacy alias for quDoneAt
+          zignalCsvAt:    row[33] ? safeDate(row[33]) : '',  // legacy alias for zignalDoneAt
           adpSheetAt:     row[34] ? safeDate(row[34]) : '',
-          adpCsvAt:       row[35] ? safeDate(row[35]) : '',
+          adpCsvAt:       row[35] ? safeDate(row[35]) : '',  // legacy alias for adpDoneAt
+          humanityDoneAt: row[31] ? safeDate(row[31]) : '',
+          humanityDoneBy: row[52] || '',
+          quDoneAt:       row[32] ? safeDate(row[32]) : '',
+          quDoneBy:       row[53] || '',
+          zignalDoneAt:   row[33] ? safeDate(row[33]) : '',
+          zignalDoneBy:   row[54] || '',
+          adpDoneAt:      row[35] ? safeDate(row[35]) : '',
+          adpDoneBy:      row[55] || '',
           // /de112b: working papers (under-18)
           workingPapersGivenAt:    row[36] ? safeDate(row[36]) : '',
           workingPapersReturnedAt: row[37] ? safeDate(row[37]) : '',
@@ -355,6 +367,10 @@ function doPost(e) {
         'Account Number',                        // AX
         'Account Type',                          // AY
         'Client Request ID',                     // AZ
+        'Humanity Done By',                      // BA
+        'Qu Done By',                            // BB
+        'Zygnal Done By',                        // BC
+        'ADP Done By',                           // BD
       ];
       // Only insert if row 1 is not already a header
       const first = sheet.getRange(1, 1).getValue();
@@ -379,6 +395,34 @@ function doPost(e) {
         data.deptCode || '',  // AD
         data.hireDate || '',  // AE
       ]]);
+      return json({ status: 'ok' });
+    }
+
+    // ── /de112c: mark a Humanity/Qu/Zygnal/ADP step complete ────────────
+    // Writes BOTH the timestamp (existing column) AND the initials of the
+    // person who marked it complete (new column). Also supports unmarking
+    // (clears both) when `clear: true`.
+    if (data.action === 'markStepComplete') {
+      const rowId = parseInt(data.rowId);
+      if (!rowId || rowId < 2) return json({ error: 'Invalid rowId' });
+      // system → [timestampCol, initialsCol]
+      const cols = {
+        humanity: [32, 53],   // AF, BA
+        qu:       [33, 54],   // AG, BB
+        zignal:   [34, 55],   // AH, BC
+        adp:      [36, 56],   // AJ, BD
+      };
+      const pair = cols[data.system];
+      if (!pair) return json({ error: 'Unknown system: ' + data.system });
+      if (data.clear) {
+        sheet.getRange(rowId, pair[0]).setValue('');
+        sheet.getRange(rowId, pair[1]).setValue('');
+      } else {
+        const initials = String(data.initials || '').toUpperCase().slice(0, 3);
+        if (!initials) return json({ error: 'Initials required' });
+        sheet.getRange(rowId, pair[0]).setValue(data.timestamp || new Date().toISOString());
+        sheet.getRange(rowId, pair[1]).setValue(initials);
+      }
       return json({ status: 'ok' });
     }
 

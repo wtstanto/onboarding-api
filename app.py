@@ -1477,6 +1477,34 @@ def upload_working_papers(row_id):
         return jsonify({"error": f"GAS error: {e}"}), 502
 
 
+@app.route("/submissions/<int:row_id>/step-complete", methods=["PATCH"])
+def mark_step_complete(row_id):
+    """Mark a Humanity/Qu/Zygnal/ADP step manually complete with initials.
+
+    Body: { system: 'humanity'|'qu'|'zignal'|'adp', initials: 'XX', clear?: bool }
+    """
+    if not check_api_key(request):
+        return jsonify({"error": "Unauthorized"}), 401
+    body = request.get_json() or {}
+    system = (body.get("system") or "").strip().lower()
+    if system not in ("humanity", "qu", "zignal", "adp"):
+        return jsonify({"error": "Invalid system"}), 400
+    clear = bool(body.get("clear"))
+    initials = "".join(c for c in str(body.get("initials") or "") if c.isalnum())[:3].upper()
+    if not clear and not initials:
+        return jsonify({"error": "Initials required"}), 400
+    result = gas_post({
+        "action":   "markStepComplete",
+        "rowId":    row_id,
+        "system":   system,
+        "initials": initials,
+        "clear":    clear,
+    }, timeout=20)
+    if not result or "error" in result:
+        return jsonify({"error": (result or {}).get("error", "GAS error")}), 502
+    return jsonify({"status": "ok"})
+
+
 @app.route("/submissions/<int:row_id>/regenerate-pdfs", methods=["POST"])
 def regenerate_pdfs(row_id):
     """Regenerate W-4, DE W-4, and I-9 PDFs from sheet data.
