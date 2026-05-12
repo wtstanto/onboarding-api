@@ -1652,15 +1652,22 @@ def get_folder_url(row_id):
 
 @app.route("/submissions/<int:row_id>", methods=["DELETE"])
 def delete_submission(row_id):
-    """Delete a test/demo submission. GAS only allows deletion of rows flagged testEntry=TRUE."""
+    """Delete an employee submission.
+
+    Default: only test entries can be deleted (testEntry=TRUE).
+    With ?force=true: any row can be deleted (admin-initiated removal). Also
+    trashes the employee's Drive folder so PII is fully removed.
+    """
     if not check_api_key(request):
         return jsonify({"error": "Unauthorized"}), 401
+    force = request.args.get("force", "").lower() in ("1", "true", "yes")
     result = gas_post({
         "action": "deleteRow",
         "rowId":  row_id,
+        "force":  force,
     }, timeout=30)
     if result is None:
         return jsonify({"error": "GAS error"}), 502
     if result.get("error"):
         return jsonify({"error": result["error"]}), 400
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok", "trashedFolder": result.get("trashedFolder", False)})

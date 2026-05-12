@@ -643,16 +643,41 @@ function doPost(e) {
       return json({ status: 'ok', removed: removed });
     }
 
-    // ── Delete a single test/demo row ────────────────────────────────────
+    // ── Delete an employee row (and optionally trash their Drive folder) ──
+    // Without `force: true`, only test entries can be deleted. With force, any
+    // row can be deleted (Flask-side admin auth is the real gate). When force
+    // is set, also trash the employee's Drive folder so PII doesn't linger.
     if (data.action === 'deleteRow') {
       const rowId = parseInt(data.rowId);
       if (!rowId || rowId < 2) return json({ error: 'Invalid rowId' });
-      // Safety check: only allow deletion of rows flagged as testEntry
       const lastCol = Math.max(sheet.getLastColumn(), 47);
       const row = sheet.getRange(rowId, 1, 1, lastCol).getValues()[0];
-      if (row[46] !== 'TRUE') return json({ error: 'Row is not a test entry — cannot delete' });
+      const force = data.force === true || data.force === 'true';
+      if (!force && row[46] !== 'TRUE') {
+        return json({ error: 'Row is not a test entry — pass force:true to delete real records' });
+      }
+      // Best-effort: trash the Drive folder (cached in AR=44, or derive from I-9 file in T=20)
+      let trashedFolder = false;
+      if (force) {
+        try {
+          let folderId = (row[43] || '').toString().trim();  // AR (44) cached
+          if (!folderId) {
+            const i9FileId = (row[19] || '').toString().trim();  // T (20)
+            if (i9FileId) {
+              const parents = DriveApp.getFileById(i9FileId).getParents();
+              if (parents.hasNext()) folderId = parents.next().getId();
+            }
+          }
+          if (folderId) {
+            DriveApp.getFolderById(folderId).setTrashed(true);
+            trashedFolder = true;
+          }
+        } catch (err) {
+          // Ignore — sheet row deletion proceeds regardless
+        }
+      }
       sheet.deleteRow(rowId);
-      return json({ status: 'ok' });
+      return json({ status: 'ok', trashedFolder: trashedFolder });
     }
 
     return json({ error: 'Unknown action' });
