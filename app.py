@@ -955,7 +955,7 @@ def send_welcome():
         firstPaycheck=first_paycheck,
         senderName=sender_name,
         senderPhone=sender_phone,
-        onboardLink=onboard_link or "https://previews.gomiddleman.com/de112c/",
+        onboardLink=onboard_link or "https://de112.com/onboarding",
     )
 
     subject = f"Welcome to the Auntie Anne's Christiana Mall Team, {first_name}!"
