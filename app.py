@@ -948,7 +948,10 @@ def send_welcome():
     except Exception:
         pay_rate_fmt = pay_rate
 
-    body = WELCOME_EMAIL_TEMPLATE.format(
+    # If the admin reviewed/edited the email in the send dialog, honor that text
+    # verbatim. Otherwise fall back to rendering the template (unchanged behavior).
+    body_override = (data.get("body") or "").strip()
+    body = body_override or WELCOME_EMAIL_TEMPLATE.format(
         firstName=first_name,
         payRate=pay_rate_fmt,
         startWeek=start_week,
@@ -958,7 +961,7 @@ def send_welcome():
         onboardLink=onboard_link or "https://de112.com/onboarding",
     )
 
-    subject = f"Welcome to the Auntie Anne's Christiana Mall Team, {first_name}!"
+    subject = (data.get("subject") or "").strip() or f"Welcome to the Auntie Anne's Christiana Mall Team, {first_name}!"
 
     # Send via Resend HTTPS API — no SMTP ports, no Google OAuth issues
     if not RESEND_API_KEY:
