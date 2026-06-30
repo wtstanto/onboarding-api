@@ -181,6 +181,11 @@ function doPost(e) {
           // /de112b: explicit Drive folder ID (set during folder creation, or
           // populated for legacy/imported employees pointing at a shared folder)
           driveFolderId:   row[43] || '',
+          // Direct deposit (AV–AY) — for ADP payroll entry, shown in admin panel
+          bankName:        row[47] || '',
+          routingNumber:   row[48] || '',
+          accountNumber:   row[49] || '',
+          accountType:     row[50] || '',
           i9s2: i9Complete ? {
             docTitle:     row[13] || '',
             docNumber:    row[14] || '',
