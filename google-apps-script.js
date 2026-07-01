@@ -113,6 +113,34 @@ function doPost(e) {
       return json({ status: 'ok', rowId: _newRow });
     }
 
+    // ── One-time repair: fix bank columns (AV–AY) ─────────────────────────
+    // Sets those columns to plain-text format and restores dropped leading
+    // zeros on routing numbers (always 9 digits). Safe to run more than once.
+    // Account numbers are only re-stored as text (their original digits are
+    // whatever is currently there — a dropped leading zero can't be recovered).
+    if (data.action === 'fixBankColumns') {
+      const last = sheet.getLastRow();
+      if (last < 2) return json({ status: 'ok', fixed: 0 });
+      const rng = sheet.getRange(2, 48, last - 1, 4);  // AV–AY, all data rows
+      rng.setNumberFormat('@');
+      const vals = rng.getValues();
+      let fixed = 0;
+      for (let i = 0; i < vals.length; i++) {
+        let routing = String(vals[i][1] || '').trim();  // index 1 = AW routing
+        if (routing && /^\d{1,9}$/.test(routing) && routing.length < 9) {
+          vals[i][1] = routing.padStart(9, '0');
+          fixed++;
+        } else {
+          vals[i][1] = routing;
+        }
+        vals[i][0] = String(vals[i][0] || '');  // bankName
+        vals[i][2] = String(vals[i][2] || '');  // accountNumber
+        vals[i][3] = String(vals[i][3] || '');  // accountType
+      }
+      rng.setValues(vals);
+      return json({ status: 'ok', fixed: fixed });
+    }
+
     // ── Patch the row with Drive folder URL + I-9 file ID ────────────────
     // Called by Flask after PDFs finish generating + uploading in the
     // background. The row already exists from the initial `log` call; this
