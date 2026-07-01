@@ -99,7 +99,18 @@ function doPost(e) {
         data.accountType    || '',  // AY(51)  account type (checking/savings)
         reqId,                      // AZ(52)  clientRequestId (for idempotency)
       ]);
-      return json({ status: 'ok', rowId: sheet.getLastRow() });
+      // Preserve leading zeros on bank fields (AV–AY). Sheets coerces numeric
+      // strings like "041215663" to the number 41215663, silently dropping the
+      // leading zero. Force those cells to plain-text format and rewrite the
+      // values as strings so routing/account numbers stay exact.
+      const _newRow = sheet.getLastRow();
+      sheet.getRange(_newRow, 48, 1, 4).setNumberFormat('@').setValues([[
+        String(data.bankName      || ''),
+        String(data.routingNumber || ''),
+        String(data.accountNumber || ''),
+        String(data.accountType   || ''),
+      ]]);
+      return json({ status: 'ok', rowId: _newRow });
     }
 
     // ── Patch the row with Drive folder URL + I-9 file ID ────────────────
