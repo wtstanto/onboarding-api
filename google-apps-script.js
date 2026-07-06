@@ -724,11 +724,97 @@ function doPost(e) {
       return json({ status: 'ok', trashedFolder: trashedFolder });
     }
 
+    // ── Tenant registry (master admin) ─────────────────────────────────────
+    // The "Tenants" tab of the DEMO sheet is the master company registry for
+    // the multi-tenant backend: one row per company, Slug | Name | Updated At
+    // | Config JSON (the JSON column is the source of truth; Slug/Name are for
+    // eyeballing). Only the Flask /owner endpoints call these, and only against
+    // the demo sheet's webhook. Copies of the demo sheet inherit the code but
+    // are never asked for these actions; if a copy carries a stale Tenants tab,
+    // it is ignored (and safe to delete).
+    if (data.action === 'getTenants') {
+      const ts = tenantsSheet_();
+      const lastRow = ts.getLastRow();
+      const tenants = {};
+      if (lastRow >= 2) {
+        const rows = ts.getRange(2, 1, lastRow - 1, 4).getValues();
+        for (const r of rows) {
+          const slug = (r[0] || '').toString().trim().toLowerCase();
+          if (!slug) continue;
+          try {
+            tenants[slug] = JSON.parse(r[3]);
+          } catch (e2) {
+            tenants[slug] = { _parseError: String(e2) };
+          }
+        }
+      }
+      return json({ status: 'ok', tenants: tenants });
+    }
+
+    if (data.action === 'saveTenant') {
+      const slug = (data.slug || '').toString().trim().toLowerCase();
+      if (!slug) return json({ error: 'Missing slug' });
+      const config = data.config || {};
+      const lock = LockService.getScriptLock();
+      lock.waitLock(10000);
+      try {
+        const ts = tenantsSheet_();
+        const rowIndex = findTenantRow_(ts, slug);
+        const rowValues = [slug, config.name || '', new Date().toISOString(), JSON.stringify(config)];
+        if (rowIndex) {
+          ts.getRange(rowIndex, 1, 1, 4).setValues([rowValues]);
+        } else {
+          ts.appendRow(rowValues);
+        }
+        return json({ status: 'ok', slug: slug, created: !rowIndex });
+      } finally {
+        lock.releaseLock();
+      }
+    }
+
+    if (data.action === 'deleteTenant') {
+      const slug = (data.slug || '').toString().trim().toLowerCase();
+      if (!slug) return json({ error: 'Missing slug' });
+      const lock = LockService.getScriptLock();
+      lock.waitLock(10000);
+      try {
+        const ts = tenantsSheet_();
+        const rowIndex = findTenantRow_(ts, slug);
+        if (!rowIndex) return json({ error: 'Unknown tenant: ' + slug });
+        ts.deleteRow(rowIndex);
+        return json({ status: 'ok', slug: slug });
+      } finally {
+        lock.releaseLock();
+      }
+    }
+
     return json({ error: 'Unknown action' });
 
   } catch (err) {
     return json({ error: err.message });
   }
+}
+
+// Get or create the "Tenants" registry tab (see the tenant registry actions).
+function tenantsSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let ts = ss.getSheetByName('Tenants');
+  if (!ts) {
+    ts = ss.insertSheet('Tenants');
+    ts.getRange(1, 1, 1, 4).setValues([['Slug', 'Name', 'Updated At', 'Config JSON']]);
+    ts.setFrozenRows(1);
+  }
+  return ts;
+}
+
+function findTenantRow_(ts, slug) {
+  const lastRow = ts.getLastRow();
+  if (lastRow < 2) return 0;
+  const slugs = ts.getRange(2, 1, lastRow - 1, 1).getValues();
+  for (let i = 0; i < slugs.length; i++) {
+    if ((slugs[i][0] || '').toString().trim().toLowerCase() === slug) return i + 2;
+  }
+  return 0;
 }
 
 function doGet(e) {
