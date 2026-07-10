@@ -397,7 +397,7 @@ function doPost(e) {
         'Pay Rate', 'Position', 'Location',      // AA–AC
         'Dept Code', 'Hire Date (confirmed)',    // AD, AE
         'Humanity CSV At', 'Qu CSV At',          // AF, AG
-        'Zignal CSV At',                         // AH
+        'Zignyl CSV At',                         // AH
         'ADP Cheat Sheet At', 'ADP CSV At',      // AI, AJ
         // /de112c additions (AK–AS are working papers, lifecycle, Drive folder, t-shirt)
         'WP Given At', 'WP Returned At', 'WP File ID',  // AK, AL, AM
@@ -413,7 +413,7 @@ function doPost(e) {
         'Client Request ID',                     // AZ
         'Humanity Done By',                      // BA
         'Qu Done By',                            // BB
-        'Zignal Done By',                        // BC
+        'Zignyl Done By',                        // BC
         'ADP Done By',                           // BD
       ];
       // Only insert if row 1 is not already a header
@@ -442,7 +442,7 @@ function doPost(e) {
       return json({ status: 'ok' });
     }
 
-    // ── /de112c: mark a Humanity/Qu/Zignal/ADP step complete ────────────
+    // ── /de112c: mark a Humanity/Qu/Zignyl/ADP step complete ────────────
     // Writes BOTH the timestamp (existing column) AND the initials of the
     // person who marked it complete (new column). Also supports unmarking
     // (clears both) when `clear: true`.

@@ -1059,7 +1059,7 @@ _COL_ADP_CSV_STAMP    = 35  # AJ
 _EXPORT_SYSTEMS = {
     "humanity": {"stamp_idx": _COL_HUMANITY_STAMP,  "stamp_col": 32, "label": "Humanity"},
     "qu":       {"stamp_idx": _COL_QU_STAMP,        "stamp_col": 33, "label": "Qu POS"},
-    "zignal":   {"stamp_idx": _COL_ZIGNAL_STAMP,    "stamp_col": 34, "label": "Zignal"},
+    "zignal":   {"stamp_idx": _COL_ZIGNAL_STAMP,    "stamp_col": 34, "label": "Zignyl"},
     "adp":      {"stamp_idx": _COL_ADP_CSV_STAMP,   "stamp_col": 36, "label": "ADP Run"},
     "adp_sheet":{"stamp_idx": _COL_ADP_SHEET_STAMP, "stamp_col": 35, "label": "ADP cheat sheet"},
 }
@@ -1220,7 +1220,7 @@ def build_qu_csv(emp):
 
 
 def build_zignal_csv(emp):
-    """Zignal template not yet confirmed — generic staff columns including a
+    """Zignyl template not yet confirmed — generic staff columns including a
     blank Qu PIN column Ashley fills in manually once Qu generates it."""
     return [
         ["First Name", "Last Name", "Role", "Location",
@@ -1482,7 +1482,7 @@ def upload_working_papers(row_id):
 
 @app.route("/submissions/<int:row_id>/step-complete", methods=["PATCH"])
 def mark_step_complete(row_id):
-    """Mark a Humanity/Qu/Zignal/ADP step manually complete with initials.
+    """Mark a Humanity/Qu/Zignyl/ADP step manually complete with initials.
 
     Body: { system: 'humanity'|'qu'|'zignal'|'adp', initials: 'XX', clear?: bool }
     """
