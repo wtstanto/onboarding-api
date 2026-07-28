@@ -963,6 +963,22 @@ def send_welcome():
 
     subject = (data.get("subject") or "").strip() or f"Welcome to the Auntie Anne's Christiana Mall Team, {first_name}!"
 
+    # Attach the employee handbook. Use the custom PDF the admin uploaded (passed
+    # here as base64) when present, otherwise the standard handbook bundled with
+    # the app, so every welcome email carries a handbook.
+    handbook_b64  = (data.get("handbookBase64") or "").strip()
+    handbook_name = (data.get("handbookName") or "").strip() or "Employee Handbook.pdf"
+    if handbook_b64.startswith("data:"):          # strip a data-URL prefix if present
+        handbook_b64 = handbook_b64.split(",", 1)[-1].strip()
+    if not handbook_b64:
+        try:
+            with open(HANDBOOK_PATH, "rb") as fh:
+                handbook_b64 = base64.b64encode(fh.read()).decode("utf-8")
+            handbook_name = "Employee Handbook.pdf"
+        except Exception:
+            handbook_b64 = ""                      # no handbook available — send without
+    attachments = [{"filename": handbook_name, "content": handbook_b64}] if handbook_b64 else []
+
     # Send via Resend HTTPS API — no SMTP ports, no Google OAuth issues
     if not RESEND_API_KEY:
         return jsonify({"error": "Email not configured — set RESEND_API_KEY in Railway"}), 500
@@ -975,13 +991,14 @@ def send_welcome():
                 "Content-Type": "application/json",
             },
             json={
-                "from":     f"{sender_name} <{RESEND_FROM_EMAIL}>",
-                "to":       [to_email],
-                "reply_to": sender_email,
-                "subject":  subject,
-                "text":     body,
+                "from":        f"{sender_name} <{RESEND_FROM_EMAIL}>",
+                "to":          [to_email],
+                "reply_to":    sender_email,
+                "subject":     subject,
+                "text":        body,
+                "attachments": attachments,
             },
-            timeout=10,
+            timeout=15,
         )
         if resend_resp.status_code not in (200, 201):
             err = resend_resp.json().get("message", resend_resp.text)
