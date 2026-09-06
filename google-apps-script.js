@@ -697,7 +697,10 @@ function doPost(e) {
       const lastCol = Math.max(sheet.getLastColumn(), 47);
       const row = sheet.getRange(rowId, 1, 1, lastCol).getValues()[0];
       const force = data.force === true || data.force === 'true';
-      if (!force && row[46] !== 'TRUE') {
+      // Sheets coerces the text 'TRUE' to a boolean, so accept both forms
+      // (getAll already does). Without this, test entries could never be
+      // deleted without force.
+      if (!force && row[46] !== 'TRUE' && row[46] !== true) {
         return json({ error: 'Row is not a test entry — pass force:true to delete real records' });
       }
       // Best-effort: trash the Drive folder (cached in AR=44, or derive from I-9 file in T=20)
