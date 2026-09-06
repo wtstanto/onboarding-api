@@ -778,6 +778,53 @@ def get_submissions():
     return jsonify(result.get("employees", []))
 
 
+@app.route("/submissions/manual", methods=["POST"])
+def add_manual_employee():
+    """Add an existing/long-tenured employee directly from the admin, without
+    running them through the new-hire form (no PDF generation, no welcome email).
+
+    Deliberately reuses the same proven GAS actions the app uses every day:
+      1. log            -> append the row (name, dob, start date, bank info)
+      2. updateEmployment -> pay rate / position / location / hire date
+      3. setStatus 'active' -> put them straight into the Active roster
+    """
+    if not check_api_key(request):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    first = (data.get("firstName") or "").strip()
+    last  = (data.get("lastName") or "").strip()
+    if not first or not last:
+        return jsonify({"error": "First and last name are required"}), 400
+
+    # 1. Append the row (log_to_sheet handles bank-field text formatting via GAS)
+    row_id = log_to_sheet(data)
+    if row_id is None:
+        return jsonify({"error": "Could not save the employee. Please try again."}), 503
+
+    # 2. Employment details (only if any were provided)
+    if any(data.get(k) for k in ("payRate", "position", "location", "deptCode", "hireDate")):
+        gas_post({
+            "action":   "updateEmployment",
+            "rowId":    row_id,
+            "payRate":  data.get("payRate", ""),
+            "position": data.get("position", ""),
+            "location": data.get("location", ""),
+            "deptCode": data.get("deptCode", ""),
+            "hireDate": data.get("hireDate", ""),
+        }, timeout=20)
+
+    # 3. Mark active (existing employees skip onboarding)
+    gas_post({
+        "action": "setStatus",
+        "rowId":  row_id,
+        "status": "active",
+        "reason": "",
+    }, timeout=90)
+
+    return jsonify({"status": "ok", "rowId": row_id})
+
+
 @app.route("/submissions/<int:row_id>/i9", methods=["PATCH"])
 def complete_i9(row_id):
     if not check_api_key(request):
